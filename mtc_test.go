@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"strings"
 	"testing"
@@ -14,13 +16,17 @@ import (
 )
 
 // Check if hex is the hexdump of data ignoring whitespace
-func hexEqual(t *testing.T, data []byte, hex string) {
-	hex = strings.ReplaceAll(hex, " ", "")
-	hex = strings.ReplaceAll(hex, "\n", "")
-	if hex != fmt.Sprintf("%x", data) {
+func hexEqual(t *testing.T, data []byte, hx string) {
+	hx = strings.ReplaceAll(hx, " ", "")
+	hx = strings.ReplaceAll(hx, "\n", "")
+	exp, err := hex.DecodeString(hx)
+	if err != nil {
+		panic(err)
+	}
+	if hx != fmt.Sprintf("%x", data) {
 		t.Fatalf(
 			"Expected:\n\n%s\n\nGot:\n\n%s",
-			hex,
+			hexdump(exp),
 			hexdump(data),
 		)
 	}
@@ -84,13 +90,11 @@ func TestDraftExampleAssertion(t *testing.T) {
      838b0a93 0b000013 0000000f 000d000b 6578616d 706c652e 636f6d`,
 	)
 
-	h.Reset()
-	privRSA, err := rsa.GenerateKey(h, 2048)
-	if err != nil {
-		t.Fatal(err)
+	pubRSA := &rsa.PublicKey{
+		E: 65537,
+		N: new(big.Int),
 	}
-
-	pubRSA := privRSA.Public()
+	pubRSA.N.SetString("26485197110366765357271253867591331256970571032009498983384617039560142240197243256907412235412914703444465375795783445504244629282526232030120785434168199087387970676542989835576382439558968773244992994383698559298575000012883472188225230198123656650604482882057654263320283841973430258705124596536674745535434496164011626531757268551766322671495046527955146152988361666116193767860898174965362168490825630499022739690144857105900731399665607528557902291677905449622032282601884218205580565913297751522172793268119949330235060676628077192257628116484481264748962841611301588059305121994521179744818537527407051544459", 10)
 	subjectRSA, err := NewTLSSubject(tlsPSSWithSHA256, pubRSA)
 	if err != nil {
 		t.Fatal(err)
@@ -113,15 +117,15 @@ func TestDraftExampleAssertion(t *testing.T) {
 	}
 
 	hexEqual(t, buf,
-		`00000112 0804010e 3082010a 02820101 00be894b 98565871 0d25fe5c fe22e582
-        e93d569c 703d7a15 94461548 521986c0 57d13d85 07a9205e d192959c 669d837a
-        f86b05be 04fcdec3 236bde60 31c70402 10427e0d 34cc26fb 82ce540c 6821a828
-        9b7e5ab1 b83ec2d6 e633a63f 432cd7a5 96dba7f0 22ca414a 25c71997 40b2cb1b
-        27ddfa1b c8281b99 d1e7f46c 2adfe9c4 33f4bdea 95867f14 aba90697 30b74e3d
-        1ef9bc47 6a3b3d14 b7f93890 04364165 2511206c 2066c7f5 54607199 f8773c32
-        892ccc4c 4aa515a6 3b7b4d6f 2a39c696 cd76515a bb40c1dc 48b09d02 f1572ffd
-        95c1e7b8 b7a3b271 f9ea093a 6778db60 e90afd82 ac0ccfed fb9c4755 ded3d328
-        0bd93f3a f1432b68 85638170 194d239a 3b020301 00010029 0001000f 000d000b
+		`00000112 0804010e 3082010a 02820101 00d1cd9c d613c050 929e6418 14b4957c
+        40f30d07 0927f653 bde7054c 06d53a89 36228b70 72fad4db a186c379 7e00300b
+        a5b6de8e 7ab3fed4 cb5a537e 7674916a 130a0435 664428a9 7f1983b7 e028b9ab
+        f24700de 1d6478c9 ae361176 daa64c2f 89b42ec0 270add68 85323401 35d22724
+        c7bd8f65 075b25b8 96a89ab8 2a2b2194 49b029b8 97e130dc dc96fce1 37351f2b
+        7a28f1d0 7b710afb 2c796211 d9ba1feb 43d30810 63f19afd b7ba2ab0 e19fd008
+        e719491d d10ed235 5d4790f0 3039e3a3 31aa2644 2d656716 ebe710f2 4260599a
+        2d082db1 eccfaa8f f51cfb8e 3dfca0eb e1af59c2 f007b35e 02b0582f 50090018
+        b78a6b06 c0188ab3 514d60d6 6243e017 8b020301 00010029 0001000f 000d000b
         6578616d 706c652e 636f6d00 02001200 10c00002 25c0000c 00c63364 3ccb0071
         00`,
 	)
@@ -131,8 +135,8 @@ func TestDraftExampleAssertion(t *testing.T) {
 		t.Fatal(err)
 	}
 	hexEqual(t, buf,
-		`00000022 0804e892 19d40f35 4915b861 c67ffea3 3e2c8af4 efa9b5cd c751bc12
-        6449a190 425d0029 0001000f 000d000b 6578616d 706c652e 636f6d00 02001200
+		`00000022 08049a04 087a4d52 033a0a20 04333359 ccf29703 25684c5f a96f1ca1
+        35cb2ab1 f2670029 0001000f 000d000b 6578616d 706c652e 636f6d00 02001200
         10c00002 25c0000c 00c63364 3ccb0071 00`,
 	)
 
