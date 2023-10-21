@@ -54,18 +54,89 @@ func hexdump(data []byte) string {
 	return buf.String()
 }
 
-func TestDraftExampleAssertion(t *testing.T) {
+func createEd25519TestTLSSubject() (*TLSSubject, error) {
 	var seed [ed25519.SeedSize]byte
+
 	h := sha3.NewShake128()
 	h.Write([]byte("MTC Example"))
 	h.Read(seed[:])
 
 	privEd := ed25519.NewKeyFromSeed(seed[:])
 	pubEd := privEd.Public()
-	subjectEd, err := NewTLSSubject(tlsEd25519, pubEd)
+	return NewTLSSubject(tlsEd25519, pubEd)
+}
+
+func createTestAssertion(i int, sub Subject) Assertion {
+	return Assertion{
+		Subject: sub,
+		Claims: Claims{
+			DNS: []string{fmt.Sprintf("%d.example.com", i)},
+		},
+	}
+}
+
+func createTestCA() *CAParams {
+	ret := CAParams{
+		IssuerId:           "example",
+		PublicKey:          nil,
+		StartTime:          0,
+		BatchDuration:      1,
+		Lifetime:           10,
+		ValidityWindowSize: 10,
+		HttpServer:         "example.com",
+	}
+	return &ret
+}
+
+func BenchmarkComputeTree(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		testComputeTree(b, 100000)
+	}
+}
+
+func testComputeTree(t testing.TB, batchSize int) {
+	// Create bunch of assertions
+	sub, err := createEd25519TestTLSSubject()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	buf := &bytes.Buffer{}
+	for i := 0; i < batchSize; i++ {
+		a := createTestAssertion(i, sub)
+		aa := a.Abridge()
+		aBytes, err := aa.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(aBytes)
+	}
+
+	batch := Batch{
+		CA:     createTestCA(),
+		Number: 123,
+	}
+
+	_, err = batch.ComputeTree(bytes.NewBuffer(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+}
+
+func TestComputeTree(t *testing.T) {
+	for i := 0; i < 16; i++ {
+		testComputeTree(t, i)
+	}
+	testComputeTree(t, 1000)
+}
+
+func TestDraftExampleAssertion(t *testing.T) {
+	subjectEd, err := createEd25519TestTLSSubject()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	a := Assertion{
 		Subject: subjectEd,
 		Claims: Claims{
