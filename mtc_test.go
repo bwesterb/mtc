@@ -90,20 +90,25 @@ func createTestCA() *CAParams {
 
 func BenchmarkComputeTree(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		testComputeTree(b, 100000)
+		_, _, _ = createTestBatch(b, 100000)
 	}
 }
 
-func testComputeTree(t testing.TB, batchSize int) {
-	// Create bunch of assertions
+// Create a test batch. Return the tree and the first few assertions.
+func createTestBatch(t testing.TB, batchSize int) (*Batch, *Tree, []Assertion) {
 	sub, err := createEd25519TestTLSSubject()
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	var as []Assertion
+
 	buf := &bytes.Buffer{}
 	for i := 0; i < batchSize; i++ {
 		a := createTestAssertion(i, sub)
+		if i < 100 {
+			as = append(as, a)
+		}
 		aa := a.Abridge()
 		aBytes, err := aa.MarshalBinary()
 		if err != nil {
@@ -117,11 +122,48 @@ func testComputeTree(t testing.TB, batchSize int) {
 		Number: 123,
 	}
 
-	_, err = batch.ComputeTree(bytes.NewBuffer(buf.Bytes()))
+	tree, err := batch.ComputeTree(bytes.NewBuffer(buf.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	return &batch, tree, as
+}
+
+func testComputeTree(t testing.TB, batchSize int) {
+	batch, tree, as := createTestBatch(t, batchSize)
+
+	root := tree.Root()
+	incorrectRoot := make([]byte, hashLen)
+
+	for i := 0; i < batchSize && i < len(as); i++ {
+		path, err := tree.AuthenticationPath(uint64(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		aa := as[i].Abridge()
+
+		err = batch.VerifyAuthenticationPath(
+			uint64(i),
+			path,
+			root,
+			&aa,
+		)
+		if err != nil {
+			t.Fatalf("%x %v", path, err)
+		}
+
+		err = batch.VerifyAuthenticationPath(
+			uint64(i),
+			path,
+			incorrectRoot,
+			&aa,
+		)
+		if err == nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestComputeTree(t *testing.T) {

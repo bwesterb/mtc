@@ -534,6 +534,11 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
+// Return root of the tree
+func (t *Tree) Root() []byte {
+	return t.buf[len(t.buf)-hashLen : len(t.buf)]
+}
+
 // Return authentication path proving that the leaf at the given index
 // is included in the Merkle tree.
 func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
@@ -546,13 +551,15 @@ func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
 	nNodes := t.nLeaves
 	for nNodes != 1 {
 		index ^= 1 // index of sibling
-		_, _ = ret.Write(t.buf[offset+int(hashLen*index) : offset+int(hashLen*(index+1))])
+		start := offset + int(hashLen*index)
+		_, _ = ret.Write(t.buf[start : start+hashLen])
 
 		// Account for the empty node
 		if nNodes&1 == 1 {
 			nNodes++
 		}
 
+		offset += hashLen * int(nNodes)
 		index >>= 1
 		nNodes >>= 1
 	}
@@ -586,15 +593,49 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
-// Check validity of authentication path
-// func (batch *Batch) CheckAuthenticationPath(path, root []byte,
-// 	aa *AbridgedAssertion) error {
+// Check validity of authentication path.
 //
-// }
+// Return nil on valid authentication path.
+func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
+	aa *AbridgedAssertion) error {
+	h := make([]byte, hashLen)
+	if err := aa.Hash(h[:], batch, index); err != nil {
+		return err
+	}
+
+	level := uint8(0)
+	var left, right []byte
+	for len(path) != 0 {
+		if len(path) < hashLen {
+			return ErrTruncated
+		}
+
+		left, right, path = h, path[:hashLen], path[hashLen:]
+		if index&1 == 1 {
+			left, right = right, left
+		}
+
+		level++
+		index >>= 1
+
+		batch.hashNode(h, left, right, index, level)
+	}
+
+	if index != 0 {
+		return fmt.Errorf("Authentication path too short")
+	}
+
+	if !bytes.Equal(root, h) {
+		return fmt.Errorf("Authentication path invalid")
+	}
+
+	return nil
+}
 
 func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 	level uint8) error {
 	var b cryptobyte.Builder
+
 	b.AddUint8(1)
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes([]byte(batch.CA.IssuerId))
@@ -611,6 +652,7 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 	h := sha256.New()
 	_, _ = h.Write(buf)
 	h.Sum(out[:0])
+
 	return nil
 
 }
@@ -687,7 +729,7 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 			_, _ = buf.Write(h)
 		}
 
-		offset += int(nNodes * hashLen)
+		offset += 2 * int(nNodes*hashLen)
 	}
 
 	return &Tree{buf: buf.Bytes(), nLeaves: nLeaves}, nil
