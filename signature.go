@@ -9,6 +9,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+
+	dil5 "github.com/cloudflare/circl/sign/dilithium/mode5"
 )
 
 // Signing public key with specific hash and options.
@@ -43,7 +45,7 @@ func (v ed25519Verifier) Bytes() []byte {
 	copy(ret, v)
 	return ret
 }
-func (v ed25519Verifier) Scheme() SignatureScheme { return tlsEd25519 }
+func (v ed25519Verifier) Scheme() SignatureScheme { return TLSEd25519 }
 func (v ed25519Verifier) Verify(msg, sig []byte) error {
 	if ed25519.Verify((ed25519.PublicKey)(v), msg, sig) {
 		return nil
@@ -71,15 +73,31 @@ func (v *ecdsaVerifier) Verify(msg, sig []byte) error {
 	return errors.New("ecdsa verification failed")
 }
 
+type dil5Verifier dil5.PublicKey
+
+func (v *dil5Verifier) Bytes() []byte {
+	var ret [dil5.PublicKeySize]byte
+	(*dil5.PublicKey)(v).Pack(&ret)
+	return ret[:]
+}
+func (v *dil5Verifier) Scheme() SignatureScheme { return TLSDilitihium5r3 }
+func (v *dil5Verifier) Verify(msg, sig []byte) error {
+	if dil5.Verify((*dil5.PublicKey)(v), msg, sig) {
+		return nil
+	}
+
+	return errors.New("dilithium5 verification failed")
+}
+
 func signatureSchemeToHash(scheme SignatureScheme) (crypto.Hash, error) {
 	switch scheme {
-	case tlsPSSWithSHA256, tlsECDSAWithP256AndSHA256:
+	case TLSPSSWithSHA256, TLSECDSAWithP256AndSHA256:
 		return crypto.SHA256, nil
-	case tlsPSSWithSHA384, tlsECDSAWithP384AndSHA384:
+	case TLSPSSWithSHA384, TLSECDSAWithP384AndSHA384:
 		return crypto.SHA384, nil
-	case tlsPSSWithSHA512, tlsECDSAWithP521AndSHA512:
+	case TLSPSSWithSHA512, TLSECDSAWithP521AndSHA512:
 		return crypto.SHA512, nil
-	case tlsEd25519:
+	case TLSEd25519, TLSDilitihium5r3:
 		return 0, nil
 	}
 	return 0, errors.New("Unsupported SignatureScheme")
@@ -87,11 +105,11 @@ func signatureSchemeToHash(scheme SignatureScheme) (crypto.Hash, error) {
 
 func signatureSchemeToCurve(scheme SignatureScheme) elliptic.Curve {
 	switch scheme {
-	case tlsECDSAWithP256AndSHA256:
+	case TLSECDSAWithP256AndSHA256:
 		return elliptic.P256()
-	case tlsECDSAWithP384AndSHA384:
+	case TLSECDSAWithP384AndSHA384:
 		return elliptic.P384()
-	case tlsECDSAWithP521AndSHA512:
+	case TLSECDSAWithP521AndSHA512:
 		return elliptic.P521()
 	}
 	panic("Unsupported curve")
@@ -105,20 +123,20 @@ func NewVerifier(scheme SignatureScheme, pk crypto.PublicKey) (
 	}
 
 	switch scheme {
-	case tlsPSSWithSHA256, tlsPSSWithSHA384, tlsPSSWithSHA512:
+	case TLSPSSWithSHA256, TLSPSSWithSHA384, TLSPSSWithSHA512:
 		rpk, ok := pk.(*rsa.PublicKey)
 		if !ok {
 			return nil, errors.New("Expected *rsa.PublicKey")
 		}
 		return &pssVerifier{hash: h, pk: rpk, scheme: scheme}, nil
 
-	case tlsEd25519:
+	case TLSEd25519:
 		epk, ok := pk.(ed25519.PublicKey)
 		if !ok || len(epk) != ed25519.PublicKeySize {
 			return nil, errors.New("Expected ed25519.PublicKey")
 		}
 		return ed25519Verifier(epk), nil
-	case tlsECDSAWithP256AndSHA256, tlsECDSAWithP384AndSHA384, tlsECDSAWithP521AndSHA512:
+	case TLSECDSAWithP256AndSHA256, TLSECDSAWithP384AndSHA384, TLSECDSAWithP521AndSHA512:
 		epk, ok := pk.(*ecdsa.PublicKey)
 		if !ok {
 			return nil, errors.New("Expected *ecdsa.PublicKey")
@@ -128,6 +146,12 @@ func NewVerifier(scheme SignatureScheme, pk crypto.PublicKey) (
 			return nil, fmt.Errorf("Expected curve %v, got %v", curve, epk.Curve)
 		}
 		return &ecdsaVerifier{hash: h, pk: epk, scheme: scheme}, nil
+	case TLSDilitihium5r3:
+		dpk, ok := pk.(*dil5.PublicKey)
+		if !ok {
+			return nil, errors.New("Expected github.com/cloudflare/circl/sign/dilithium/mode5.*PublicKey")
+		}
+		return (*dil5Verifier)(dpk), nil
 	default:
 		return nil, errors.New("Unsupported SignatureScheme")
 	}
@@ -141,18 +165,18 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 	}
 
 	switch scheme {
-	case tlsPSSWithSHA256, tlsPSSWithSHA384, tlsPSSWithSHA512:
+	case TLSPSSWithSHA256, TLSPSSWithSHA384, TLSPSSWithSHA512:
 		pk, err := x509.ParsePKCS1PublicKey(data)
 		if err != nil {
 			return nil, err
 		}
 		return &pssVerifier{hash: h, pk: pk, scheme: scheme}, nil
-	case tlsEd25519:
+	case TLSEd25519:
 		if len(data) != ed25519.PublicKeySize {
 			return nil, errors.New("Wrong length for ed25519 public key")
 		}
 		return ed25519Verifier(data), nil
-	case tlsECDSAWithP521AndSHA512, tlsECDSAWithP384AndSHA384, tlsECDSAWithP256AndSHA256:
+	case TLSECDSAWithP521AndSHA512, TLSECDSAWithP384AndSHA384, TLSECDSAWithP256AndSHA256:
 		curve := signatureSchemeToCurve(scheme)
 		x, y := elliptic.Unmarshal(curve, data)
 		if x == nil {
@@ -167,7 +191,81 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 			},
 			scheme: scheme,
 		}, nil
+	case TLSDilitihium5r3:
+		var (
+			buf [dil5.PublicKeySize]byte
+			pk  dil5.PublicKey
+		)
+		if len(data) != dil5.PublicKeySize {
+			return nil, errors.New("Wrong length for dilithium5 public key")
+		}
+		copy(buf[:], data)
+		pk.Unpack(&buf)
+		return (*dil5Verifier)(&pk), nil
 	default:
 		return nil, errors.New("Unsupported SignatureScheme")
+	}
+}
+
+// Signing private key with specific hash and options.
+type Signer interface {
+	Sign(message []byte) []byte
+	Scheme() SignatureScheme
+	Bytes() []byte
+}
+
+type dil5Signer dil5.PrivateKey
+
+func (s *dil5Signer) Bytes() []byte {
+	var ret [dil5.PrivateKeySize]byte
+	(*dil5.PrivateKey)(s).Pack(&ret)
+	return ret[:]
+}
+func (s *dil5Signer) Scheme() SignatureScheme { return TLSDilitihium5r3 }
+func (s *dil5Signer) Sign(msg []byte) []byte {
+	var sig [dil5.SignatureSize]byte
+	dil5.SignTo((*dil5.PrivateKey)(s), msg, sig[:])
+	return sig[:]
+}
+
+func UnmarshalSigner(scheme SignatureScheme, data []byte) (
+	Signer, error) {
+	_, err := signatureSchemeToHash(scheme)
+	if err != nil {
+		return nil, err
+	}
+
+	switch scheme {
+	case TLSDilitihium5r3:
+		var (
+			buf [dil5.PrivateKeySize]byte
+			sk  dil5.PrivateKey
+		)
+		if len(data) != dil5.PrivateKeySize {
+			return nil, errors.New("Wrong length for dilithium5 private key")
+		}
+		copy(buf[:], data)
+		sk.Unpack(&buf)
+		return (*dil5Signer)(&sk), nil
+	default:
+		return nil, errors.New("Unsupported SignatureScheme")
+	}
+}
+
+func GenerateSigningKeypair(scheme SignatureScheme) (Signer, Verifier, error) {
+	_, err := signatureSchemeToHash(scheme)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch scheme {
+	case TLSDilitihium5r3:
+		pk, sk, err := dil5.GenerateKey(nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		return (*dil5Signer)(sk), (*dil5Verifier)(pk), nil
+	default:
+		return nil, nil, errors.New("Unsupported SignatureScheme")
 	}
 }

@@ -16,13 +16,14 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
+// Public parameters of a Merkle Tree CA
 type CAParams struct {
 	IssuerId           string
 	PublicKey          Verifier
-	StartTime          uint
-	BatchDuration      uint
-	Lifetime           uint
-	ValidityWindowSize uint
+	StartTime          uint64
+	BatchDuration      uint64
+	Lifetime           uint64
+	ValidityWindowSize uint64
 	HttpServer         string
 }
 
@@ -99,13 +100,18 @@ type AbridgedAssertion struct {
 type SignatureScheme uint16
 
 const (
-	tlsPSSWithSHA256          SignatureScheme = 0x0804
-	tlsPSSWithSHA384          SignatureScheme = 0x0805
-	tlsPSSWithSHA512          SignatureScheme = 0x0806
-	tlsECDSAWithP256AndSHA256 SignatureScheme = 0x0403
-	tlsECDSAWithP384AndSHA384 SignatureScheme = 0x0503
-	tlsECDSAWithP521AndSHA512 SignatureScheme = 0x0603
-	tlsEd25519                SignatureScheme = 0x0807
+	TLSPSSWithSHA256          SignatureScheme = 0x0804
+	TLSPSSWithSHA384          SignatureScheme = 0x0805
+	TLSPSSWithSHA512          SignatureScheme = 0x0806
+	TLSECDSAWithP256AndSHA256 SignatureScheme = 0x0403
+	TLSECDSAWithP384AndSHA384 SignatureScheme = 0x0503
+	TLSECDSAWithP521AndSHA512 SignatureScheme = 0x0603
+	TLSEd25519                SignatureScheme = 0x0807
+
+	// Just for testing we use round 3 Dilithium5 with a codepoint in the
+	// private use region. For production SPHINCS⁺-128s would be a better
+	// choice.
+	TLSDilitihium5r3 SignatureScheme = 0xfe3c
 )
 
 type AbridgedTLSSubject struct {
@@ -300,6 +306,61 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
 		info: []byte(proofInfo),
 	}
 	return nil
+}
+
+func (p *CAParams) MarshalBinary() ([]byte, error) {
+	// TODO add struct to I-D
+	var b cryptobyte.Builder
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(p.IssuerId))
+	})
+	b.AddUint16(uint16(p.PublicKey.Scheme()))
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(p.PublicKey.Bytes())
+	})
+	b.AddUint64(p.StartTime)
+	b.AddUint64(p.BatchDuration)
+	b.AddUint64(p.Lifetime)
+	b.AddUint64(p.ValidityWindowSize)
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(p.HttpServer))
+	})
+	return b.Bytes()
+}
+
+func (p *CAParams) UnmarshalBinary(data []byte) error {
+	s := cryptobyte.String(data)
+	var (
+		issuerBuf     []byte
+		pkBuf         []byte
+		httpServerBuf []byte
+		sigScheme     SignatureScheme
+		err           error
+	)
+
+	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(&issuerBuf)) ||
+		!s.ReadUint16((*uint16)(&sigScheme)) ||
+		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&pkBuf)) ||
+		!s.ReadUint64(&p.StartTime) ||
+		!s.ReadUint64(&p.BatchDuration) ||
+		!s.ReadUint64(&p.Lifetime) ||
+		!s.ReadUint64(&p.ValidityWindowSize) ||
+		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&httpServerBuf)) {
+		return ErrTruncated
+	}
+
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+
+	p.IssuerId = string(issuerBuf)
+	p.HttpServer = string(httpServerBuf)
+	p.PublicKey, err = UnmarshalVerifier(sigScheme, pkBuf)
+	if err != nil {
+		return err
+	}
+
+	return p.Validate()
 }
 
 func (p *CAParams) Validate() error {
