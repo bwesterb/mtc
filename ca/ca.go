@@ -3,16 +3,26 @@ package ca
 import (
 	"errors"
 	"fmt"
+	"io"
+	"bufio"
+	"bytes"
 	"os"
 	gopath "path"
 	"path/filepath"
+	"crypto/sha256"
 	"time"
-)
 
-import (
 	"github.com/bwesterb/mtc"
 
 	"github.com/nightlyone/lockfile"
+	"golang.org/x/crypto/cryptobyte"
+)
+
+const csLen = 32
+
+var (
+    ErrChecksumInvalid = errors.New("Invalid checksum")
+    ErrClosed = errors.New("Handle is closed")
 )
 
 type NewOpts struct {
@@ -35,16 +45,105 @@ type Handle struct {
 	closed bool
 }
 
+type QueuedAssertion struct {
+    Checksum []byte
+    Assertion mtc.Assertion
+}
+
+func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
+    var (
+        s cryptobyte.String = cryptobyte.String(data)
+        checksum []byte
+    )
+	if !s.ReadBytes(&checksum, csLen) {
+		return mtc.ErrTruncated
+	}
+
+    a.Checksum = make([]byte, csLen)
+    copy(a.Checksum, checksum)
+
+    // checksum2 := sha256.Sum256([]byte(s))
+    // if !bytes.Equal(checksum2[:], checksum) {
+    //     return ErrChecksumInvalid
+    // }
+
+    if err := a.Assertion.UnmarshalBinary([]byte(s)); err != nil {
+        return err
+    }
+
+	return nil
+}
+
+func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
+    var b cryptobyte.Builder
+
+    buf, err := a.Assertion.MarshalBinary()
+    if err != nil {
+        return nil, err
+    }
+
+    checksum2 := sha256.Sum256([]byte(buf))
+    if a.Checksum == nil {
+        copy(a.Checksum, checksum2[:])
+    } else if !bytes.Equal(checksum2[:], a.Checksum) {
+        return nil, ErrChecksumInvalid
+    }
+    b.AddBytes(a.Checksum)
+    b.AddBytes(buf)
+
+    return b.Bytes()
+}
+
 func (ca *Handle) Params() mtc.CAParams {
 	return ca.params
 }
 
 func (ca *Handle) Close() error {
 	if ca.closed {
-		return errors.New("Already closed")
+        return ErrClosed
 	}
 	ca.closed = true
 	return ca.flock.Unlock()
+}
+
+// Queue assertion for publication.
+//
+// If checksum is not nil, makes sure assertion matches the checksum.
+func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
+    if h.closed {
+        return ErrClosed
+    }
+    qa := QueuedAssertion{
+        Checksum: checksum,
+        Assertion: a,
+    }
+
+    buf, err := qa.MarshalBinary()
+    if err != nil {
+        return err
+    }
+
+    var b cryptobyte.Builder
+    b.AddUint16(uint16(len(buf)))
+    prefix, _ := b.Bytes()
+
+    w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
+    if err != nil {
+        return fmt.Errorf("opening queue: %w", err)
+    }
+    defer w.Close()
+
+    _, err = w.Write(prefix)
+    if err != nil {
+        return fmt.Errorf("writing to queue: %w", err)
+    }
+
+    _, err = w.Write(buf)
+    if err != nil {
+        return fmt.Errorf("writing to queue: %w", err)
+    }
+
+    return nil
 }
 
 // Load private state of Merkle Tree CA, and acquire lock.
@@ -91,6 +190,10 @@ func (h Handle) paramsPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "ca-params")
 }
 
+func (h Handle) queuePath() string {
+	return gopath.Join(h.path, "queue")
+}
+
 func (h *Handle) lock() error {
 	lockPath := gopath.Join(h.path, "lock")
 	absLockPath, err := filepath.Abs(lockPath)
@@ -106,6 +209,52 @@ func (h *Handle) lock() error {
 		return fmt.Errorf("Acquiring lock %s: %w", absLockPath, err)
 	}
 	return nil
+}
+
+// Calls f on each assertion queued to be published.
+func (h *Handle)  WalkQueue(f func(QueuedAssertion)error)error {
+    r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
+    if err != nil {
+        return fmt.Errorf("Opening queue: %w", err)
+    }
+    defer r.Close()
+
+    br := bufio.NewReader(r)
+
+    for {
+        var (
+            prefix [2]byte
+            aLen uint16
+            qa QueuedAssertion
+        )
+        _, err := io.ReadFull(br, prefix[:])
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return fmt.Errorf("Reading queue: %w", err)
+        }
+        s := cryptobyte.String(prefix[:])
+        _ = s.ReadUint16(&aLen) 
+
+        buf := make([]byte, int(aLen))
+        _, err = io.ReadFull(br, buf)
+        if err != nil {
+            return fmt.Errorf("Reading queue: %w", err)
+        }
+
+        err = qa.UnmarshalBinary(buf)
+        if err != nil {
+            return fmt.Errorf("Parsing queue: %w", err)
+        }
+
+        err = f(qa)
+        if err != nil {
+            return err
+        }
+    }
+
+    return nil
 }
 
 // Creates a new Merkle Tree CA, and opens it.
@@ -200,9 +349,8 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	}
 
 	// Queue
-	queuePath := gopath.Join(path, "queue")
-	if err := os.WriteFile(queuePath, []byte{}, 0o644); err != nil {
-		return nil, fmt.Errorf("Writing %s: %w", queuePath, err)
+	if err := os.WriteFile(h.queuePath(), []byte{}, 0o644); err != nil {
+		return nil, fmt.Errorf("Writing %s: %w", h.queuePath(), err)
 	}
 
 	paramsBuf, err := h.params.MarshalBinary()

@@ -6,9 +6,13 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"text/tabwriter"
 	"time"
@@ -18,15 +22,142 @@ var (
 	errArgs = errors.New("Wrong number of arguments")
 )
 
-func handleCaStatus(cc *cli.Context) error {
-    ca, err := ca.Open(cc.String("ca-path"))
-    if err != nil {
-        return err
-    }
-    defer ca.Close()
+func handleCaQueue(cc *cli.Context) error {
+	var (
+		checksum []byte
+		err      error
+	)
+	cs := mtc.Claims{
+		DNS:         cc.StringSlice("dns"),
+		DNSWildcard: cc.StringSlice("dns-wildcard"),
+	}
 
-    fmt.Printf("Hi!\n")
-    return nil
+	for _, ip := range cc.StringSlice("ipv4") {
+		cs.IPv4 = append(cs.IPv4, net.ParseIP(ip))
+	}
+
+	for _, ip := range cc.StringSlice("ipv6") {
+		cs.IPv6 = append(cs.IPv6, net.ParseIP(ip))
+	}
+
+	if (cc.String("tls-pem") == "" &&
+		cc.String("tls-der") == "") ||
+		(cc.String("tls-pem") != "" &&
+			cc.String("tls-der") != "") {
+		return errors.New("Expect either tls-pem or tls-der flag")
+	}
+
+	usingPem := false
+	subjectPath := cc.String("tls-der")
+	if cc.String("tls-pem") != "" {
+		usingPem = true
+		subjectPath = cc.String("tls-pem")
+	}
+
+	subjectBuf, err := os.ReadFile(subjectPath)
+	if err != nil {
+		return fmt.Errorf("reading subject %s: %w", subjectPath, err)
+	}
+
+	if usingPem {
+		block, _ := pem.Decode([]byte(subjectBuf))
+		if block == nil {
+			return fmt.Errorf(
+				"reading subject %s: failed to parse PEM block",
+				subjectPath,
+			)
+		}
+		subjectBuf = block.Bytes
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(subjectBuf)
+	if err != nil {
+		return fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
+	}
+
+	var scheme mtc.SignatureScheme
+	if cc.String("tls-scheme") != "" {
+		scheme = mtc.SignatureSchemeFromString(cc.String("tls-scheme"))
+		if scheme == 0 {
+			return fmt.Errorf("Unknown TLS signature scheme: %s", scheme)
+		}
+	} else {
+		schemes := mtc.SignatureSchemesFor(pub)
+		if len(schemes) == 0 {
+			return fmt.Errorf("No matching signature scheme for that public key")
+		}
+		if len(schemes) >= 2 {
+			return fmt.Errorf("Specify --tls-scheme with one of %s", schemes)
+		}
+		scheme = schemes[0]
+	}
+
+	subj, err := mtc.NewTLSSubject(scheme, pub)
+	if err != nil {
+		return fmt.Errorf("creating subject: %w", err)
+	}
+
+	a := mtc.Assertion{
+		Claims:  cs,
+		Subject: subj,
+	}
+
+	if cc.String("checksum") != "" {
+		checksum, err = hex.DecodeString(cc.String("checksum"))
+		if err != nil {
+			fmt.Errorf("Parsing checksum: %w", err)
+		}
+	}
+
+	h, err := ca.Open(cc.String("ca-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	err = h.Queue(a, checksum)
+
+	return nil
+}
+
+func handleCaShowQueue(cc *cli.Context) error {
+	h, err := ca.Open(cc.String("ca-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	count := 0
+
+	err = h.WalkQueue(func(qa ca.QueuedAssertion) error {
+		count++
+		a := qa.Assertion
+		cs := a.Claims
+		subj := a.Subject
+		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+		fmt.Fprintf(w, "checksum\t%x\n", qa.Checksum)
+		fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+		if len(cs.DNS) != 0 {
+			fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+		}
+		if len(cs.DNSWildcard) != 0 {
+			fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+		}
+		if len(cs.IPv4) != 0 {
+			fmt.Fprintf(w, "ipv4\t%s\n", cs.IPv4)
+		}
+		if len(cs.IPv6) != 0 {
+			fmt.Fprintf(w, "ipv6\t%s\n", cs.IPv6)
+		}
+		w.Flush()
+		fmt.Printf("\n")
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Total number of assertions in queue: %d\n", count)
+	return nil
 }
 
 func handleCaNew(cc *cli.Context) error {
@@ -34,7 +165,7 @@ func handleCaNew(cc *cli.Context) error {
 		cli.ShowSubcommandHelp(cc)
 		return errArgs
 	}
-	ca, err := ca.New(
+	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
 			IssuerId:   cc.Args().Get(0),
@@ -44,7 +175,7 @@ func handleCaNew(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	ca.Close()
+	h.Close()
 	return nil
 }
 
@@ -101,9 +232,55 @@ func main() {
 						ArgsUsage: "<issuer-id> <http-server>",
 					},
 					{
-						Name:      "status",
-						Usage:     "Shows state of CA",
-						Action:    handleCaStatus,
+						Name:   "show-queue",
+						Usage:  "prints the queue",
+						Action: handleCaShowQueue,
+					},
+					{
+						Name:   "queue",
+						Usage:  "queue assertion for publication",
+						Action: handleCaQueue,
+						Flags: []cli.Flag{
+							&cli.StringSliceFlag{
+								Name:     "dns",
+								Aliases:  []string{"d"},
+								Category: "Claim",
+							},
+							&cli.StringSliceFlag{
+								Name:     "dns-wildcard",
+								Aliases:  []string{"w"},
+								Category: "Claim",
+							},
+							&cli.StringSliceFlag{
+								Name:     "ip4",
+								Category: "Claim",
+							},
+							&cli.StringSliceFlag{
+								Name:     "ip6",
+								Category: "Claim",
+							},
+
+							&cli.StringFlag{
+								Name:     "tls-pem",
+								Category: "Subject",
+								Usage:    "path to PEM encoded subject public key",
+							},
+							&cli.StringFlag{
+								Name:     "tls-der",
+								Category: "Subject",
+								Usage:    "path to DER encoded subject public key",
+							},
+							&cli.StringFlag{
+								Name:     "tls-scheme",
+								Category: "Subject",
+								Usage:    "TLS signature scheme to be used by subject",
+							},
+							&cli.StringFlag{
+								Name:     "checksum",
+								Category: "Other",
+								Usage:    "Only proceed if checksum matches",
+							},
+						},
 					},
 				},
 			},

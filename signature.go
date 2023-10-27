@@ -269,3 +269,74 @@ func GenerateSigningKeypair(scheme SignatureScheme) (Signer, Verifier, error) {
 		return nil, nil, errors.New("Unsupported SignatureScheme")
 	}
 }
+
+func (s SignatureScheme) String() string {
+	switch s {
+	case TLSPSSWithSHA256:
+		return "rsa-sha256"
+	case TLSPSSWithSHA384:
+		return "rsa-sha384"
+	case TLSPSSWithSHA512:
+		return "rsa-sha512"
+	case TLSECDSAWithP256AndSHA256:
+		return "p256"
+	case TLSECDSAWithP384AndSHA384:
+		return "p384"
+	case TLSECDSAWithP521AndSHA512:
+		return "p521"
+	case TLSEd25519:
+		return "ed25519"
+	case TLSDilitihium5r3:
+		return "dilithium5"
+	}
+	return fmt.Sprintf("unknown:%d", uint16(s))
+}
+
+func SignatureSchemeFromString(s string) SignatureScheme {
+	switch s {
+	case "rsa-sha256":
+		return TLSPSSWithSHA256
+	case "rsa-sha384":
+		return TLSPSSWithSHA384
+	case "rsa-sha512":
+		return TLSPSSWithSHA512
+	case "p256":
+		return TLSECDSAWithP256AndSHA256
+	case "p384":
+		return TLSECDSAWithP384AndSHA384
+	case "p521":
+		return TLSECDSAWithP521AndSHA512
+	case "dilithium5":
+		return TLSDilitihium5r3
+	case "ed25519":
+		return TLSEd25519
+	}
+	return 0
+}
+
+// Returns valid signature schemes for given public key
+func SignatureSchemesFor(pk crypto.PublicKey) []SignatureScheme {
+	switch pk := pk.(type) {
+	case *rsa.PublicKey:
+		return []SignatureScheme{
+			TLSPSSWithSHA256,
+			TLSPSSWithSHA384,
+			TLSPSSWithSHA512,
+		}
+	case *ecdsa.PublicKey:
+		switch pk.Curve.Params().Name {
+		case "P-256":
+			return []SignatureScheme{TLSECDSAWithP256AndSHA256}
+		case "P-384":
+			return []SignatureScheme{TLSECDSAWithP384AndSHA384}
+		case "P-521":
+			return []SignatureScheme{TLSECDSAWithP521AndSHA512}
+		}
+		return []SignatureScheme{}
+	case ed25519.PublicKey:
+		return []SignatureScheme{TLSEd25519}
+	case *dil5.PublicKey:
+		return []SignatureScheme{TLSDilitihium5r3}
+	}
+	return []SignatureScheme{}
+}
