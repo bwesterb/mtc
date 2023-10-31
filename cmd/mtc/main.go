@@ -137,6 +137,12 @@ func handleCaShowQueue(cc *cli.Context) error {
 		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 		fmt.Fprintf(w, "checksum\t%x\n", qa.Checksum)
 		fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+		switch subj := subj.(type) {
+		case *mtc.TLSSubject:
+			asubj := subj.Abridge().(*mtc.AbridgedTLSSubject)
+			fmt.Fprintf(w, "signature_scheme\t%s\n", asubj.SignatureScheme)
+			fmt.Fprintf(w, "public_key_hash\t%x\n", asubj.PublicKeyHash[:])
+		}
 		if len(cs.DNS) != 0 {
 			fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
 		}
