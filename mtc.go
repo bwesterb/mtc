@@ -444,9 +444,18 @@ func (s *TLSSubject) Info() []byte {
 }
 
 func (s *TLSSubject) Abridge() AbridgedSubject {
+	ss := cryptobyte.String(s.packed)
+	var (
+		scheme    SignatureScheme
+		publicKey cryptobyte.String
+	)
+	if !ss.ReadUint16((*uint16)(&scheme)) ||
+		!ss.ReadUint16LengthPrefixed(&publicKey) {
+		panic(ErrTruncated)
+	}
 	return &AbridgedTLSSubject{
-		PublicKeyHash:   sha256.Sum256(s.pk.Bytes()),
-		SignatureScheme: s.pk.Scheme(),
+		PublicKeyHash:   sha256.Sum256([]byte(publicKey)),
+		SignatureScheme: scheme,
 	}
 }
 
