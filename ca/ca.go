@@ -62,10 +62,10 @@ func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
     a.Checksum = make([]byte, csLen)
     copy(a.Checksum, checksum)
 
-    // checksum2 := sha256.Sum256([]byte(s))
-    // if !bytes.Equal(checksum2[:], checksum) {
-    //     return ErrChecksumInvalid
-    // }
+    checksum2 := sha256.Sum256([]byte(s))
+    if !bytes.Equal(checksum2[:], checksum) {
+        return ErrChecksumInvalid
+    }
 
     if err := a.Assertion.UnmarshalBinary([]byte(s)); err != nil {
         return err
@@ -84,7 +84,7 @@ func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
 
     checksum2 := sha256.Sum256([]byte(buf))
     if a.Checksum == nil {
-        copy(a.Checksum, checksum2[:])
+        a.Checksum = checksum2[:]
     } else if !bytes.Equal(checksum2[:], a.Checksum) {
         return nil, ErrChecksumInvalid
     }

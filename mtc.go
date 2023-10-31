@@ -428,6 +428,15 @@ func (s *TLSSubject) Verifier() (Verifier, error) {
 	return pk, nil
 }
 
+func (s SubjectType) String() string {
+	switch s {
+	case TLSSubjectType:
+		return "TLS"
+	default:
+		return fmt.Sprintf("SubjectType(%d)", s)
+	}
+}
+
 func (s *TLSSubject) Type() SubjectType { return TLSSubjectType }
 
 func (s *TLSSubject) Info() []byte {
@@ -1121,6 +1130,7 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 			}
 		}
 
+		b.AddUint16(uint16(claim.Type))
 		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 			b.AddBytes(claim.Info)
 		})

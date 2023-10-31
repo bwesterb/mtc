@@ -32,11 +32,11 @@ func handleCaQueue(cc *cli.Context) error {
 		DNSWildcard: cc.StringSlice("dns-wildcard"),
 	}
 
-	for _, ip := range cc.StringSlice("ipv4") {
+	for _, ip := range cc.StringSlice("ip4") {
 		cs.IPv4 = append(cs.IPv4, net.ParseIP(ip))
 	}
 
-	for _, ip := range cc.StringSlice("ipv6") {
+	for _, ip := range cc.StringSlice("ip6") {
 		cs.IPv6 = append(cs.IPv6, net.ParseIP(ip))
 	}
 
@@ -144,10 +144,10 @@ func handleCaShowQueue(cc *cli.Context) error {
 			fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
 		}
 		if len(cs.IPv4) != 0 {
-			fmt.Fprintf(w, "ipv4\t%s\n", cs.IPv4)
+			fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
 		}
 		if len(cs.IPv6) != 0 {
-			fmt.Fprintf(w, "ipv6\t%s\n", cs.IPv6)
+			fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 		}
 		w.Flush()
 		fmt.Printf("\n")
