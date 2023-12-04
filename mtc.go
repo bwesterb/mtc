@@ -257,6 +257,12 @@ func (r BatchRange) String() string {
 	if r.Begin == r.End {
 		return "⌀"
 	}
+	if r.End == r.Begin+1 {
+		return fmt.Sprintf("%d", r.Begin)
+	}
+	if r.End == r.Begin+2 {
+		return fmt.Sprintf("%d,%d", r.Begin, r.Begin+1)
+	}
 	return fmt.Sprintf("%d,…,%d", r.Begin, r.End-1)
 }
 
