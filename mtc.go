@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/cryptobyte"
 )
@@ -24,11 +25,12 @@ type CAParams struct {
 	BatchDuration      uint64
 	Lifetime           uint64
 	ValidityWindowSize uint64
+	StorageWindowSize  uint64
 	HttpServer         string
 }
 
 const (
-	hashLen = 32
+	HashLen = 32
 )
 
 type ClaimType uint16
@@ -116,7 +118,7 @@ const (
 
 type AbridgedTLSSubject struct {
 	SignatureScheme SignatureScheme
-	PublicKeyHash   [hashLen]byte
+	PublicKeyHash   [HashLen]byte
 }
 
 type BikeshedCertificate struct {
@@ -159,6 +161,16 @@ type MerkleTreeProof struct {
 type UnknownProof struct {
 	anchor *UnknownTrustAnchor
 	info   []byte
+}
+
+type ValidityWindow struct {
+	BatchNumber uint32
+	TreeHeads   []byte
+}
+
+type SignedValidityWindow struct {
+	ValidityWindow
+	Signature []byte
 }
 
 func (t *MerkleTreeTrustAnchor) ProofType() ProofType {
@@ -218,6 +230,36 @@ type Batch struct {
 	Number uint32
 }
 
+// Range of batch numbers Begin, …, End-1.
+type BatchRange struct {
+	Begin uint32
+	End   uint32
+}
+
+func (r BatchRange) Len() int {
+	return int(r.End) - int(r.Begin)
+}
+
+// Returns whether each batch in the range is after the given batch
+func (r BatchRange) AreAllPast(batch uint32) bool {
+	if r.Begin == r.End {
+		return true
+	}
+	return batch < r.Begin
+}
+
+// Returns whether r contains the batch with the given number.
+func (r BatchRange) Contains(batch uint32) bool {
+	return r.Begin <= batch && batch < r.End
+}
+
+func (r BatchRange) String() string {
+	if r.Begin == r.End {
+		return "⌀"
+	}
+	return fmt.Sprintf("%d,…,%d", r.Begin, r.End-1)
+}
+
 // Merkle tree built upon the assertions of a batch.
 type Tree struct {
 	// Concatenation of nodes left-to-right, bottom-to-top, so for
@@ -236,6 +278,25 @@ type Tree struct {
 	buf []byte
 
 	nLeaves uint64 // Number of assertions
+}
+
+// Write the tree to w
+func (t *Tree) WriteTo(w io.Writer) error {
+	var b cryptobyte.Builder
+	b.AddUint64(t.nLeaves)
+	buf, err := b.Bytes()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(buf)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(t.buf)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
@@ -308,6 +369,41 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// Batches that are expected to be available at this CA, at the given time.
+// The last few might not yet have been published.
+func (p *CAParams) StoredBatches(dt time.Time) BatchRange {
+	ts := dt.Unix()
+	if ts < int64(p.StartTime) {
+		return BatchRange{} // none
+	}
+	currentNumber := (ts - int64(p.StartTime)) / int64(p.BatchDuration)
+	start := currentNumber - int64(p.StorageWindowSize)
+	if start < 0 {
+		start = 0
+	}
+	return BatchRange{
+		Begin: uint32(start),
+		End:   uint32(currentNumber),
+	}
+}
+
+// Batches that are non-expired, and either issued or ready, at the given time.
+func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
+	ts := dt.Unix()
+	if ts < int64(p.StartTime) {
+		return BatchRange{} // none
+	}
+	currentNumber := (ts - int64(p.StartTime)) / int64(p.BatchDuration)
+	start := currentNumber - int64(p.ValidityWindowSize)
+	if start < 0 {
+		start = 0
+	}
+	return BatchRange{
+		Begin: uint32(start),
+		End:   uint32(currentNumber),
+	}
+}
+
 func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
@@ -322,6 +418,7 @@ func (p *CAParams) MarshalBinary() ([]byte, error) {
 	b.AddUint64(p.BatchDuration)
 	b.AddUint64(p.Lifetime)
 	b.AddUint64(p.ValidityWindowSize)
+	b.AddUint64(p.StorageWindowSize)
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes([]byte(p.HttpServer))
 	})
@@ -345,6 +442,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 		!s.ReadUint64(&p.BatchDuration) ||
 		!s.ReadUint64(&p.Lifetime) ||
 		!s.ReadUint64(&p.ValidityWindowSize) ||
+		!s.ReadUint64(&p.StorageWindowSize) ||
 		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&httpServerBuf)) {
 		return ErrTruncated
 	}
@@ -376,7 +474,129 @@ func (p *CAParams) Validate() error {
 	if p.ValidityWindowSize != p.Lifetime/p.BatchDuration {
 		return errors.New("validity_window_size ≠ lifetime / batch_duration")
 	}
+	if p.StorageWindowSize < 2*p.ValidityWindowSize {
+		return errors.New("storage_window_size < 2*validity_window_size")
+	}
 	return nil
+}
+
+// Returns the roots of the validity window prior the epoch.
+func (p *CAParams) PreEpochRoots() []byte {
+	b := Batch{
+		Number: 0,
+		CA:     p,
+	}
+	ret := make([]byte, int(p.ValidityWindowSize)*HashLen)
+	if err := b.hashEmpty(ret[:], 0, 0); err != nil {
+		panic(err)
+	}
+	for i := 1; i < int(p.ValidityWindowSize); i++ {
+		copy(ret[i*HashLen:(i+1)*HashLen], ret[0:HashLen])
+	}
+	return ret
+}
+
+func (w *ValidityWindow) unmarshal(s *cryptobyte.String, p *CAParams) error {
+	toRead := int(HashLen * p.ValidityWindowSize)
+	if !s.ReadUint32(&w.BatchNumber) || !s.ReadBytes(&w.TreeHeads, toRead) {
+		return ErrTruncated
+	}
+
+	return nil
+}
+
+func (w *SignedValidityWindow) UnmarshalBinary(data []byte, p *CAParams) error {
+	s := cryptobyte.String(data)
+	err := w.ValidityWindow.unmarshal(&s, p)
+	if err != nil {
+		return err
+	}
+	if !s.ReadUint16LengthPrefixed((*cryptobyte.String)(&w.Signature)) {
+		return ErrTruncated
+	}
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+	return nil
+}
+
+func (w *ValidityWindow) MarshalBinary() ([]byte, error) {
+	var b cryptobyte.Builder
+	b.AddUint32(w.BatchNumber)
+	b.AddBytes(w.TreeHeads)
+	return b.Bytes()
+}
+
+func (w *SignedValidityWindow) MarshalBinary() ([]byte, error) {
+	var b cryptobyte.Builder
+	window, err := w.ValidityWindow.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(window)
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(w.Signature)
+	})
+	return b.Bytes()
+}
+
+// Returns the corresponding marshalled LabeledValdityWindow, which
+// is signed by the CA.
+func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
+	var b cryptobyte.Builder
+	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(ca.IssuerId))
+	})
+	buf, err := w.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(buf)
+	return b.Bytes()
+}
+
+// Returns TreeHeads from the previous batch's TreeHeads and the new root.
+func (p *CAParams) newTreeHeads(prevHeads, root []byte) ([]byte, error) {
+	expected := HashLen * p.ValidityWindowSize
+	if len(prevHeads) != int(expected) {
+		return nil, fmt.Errorf(
+			"Expected prevHeads to be %d bytes; got %d bytes instead",
+			expected,
+			len(prevHeads),
+		)
+	}
+	if len(root) != HashLen {
+		return nil, fmt.Errorf(
+			"Expected root to be %d bytes; got %d bytes instead",
+			expected,
+			len(root),
+		)
+	}
+	return append(prevHeads[HashLen:len(prevHeads)], root...), nil
+}
+
+func (batch *Batch) SignValidityWindow(signer Signer, prevHeads []byte,
+	root []byte) (SignedValidityWindow, error) {
+	newHeads, err := batch.CA.newTreeHeads(prevHeads, root)
+	if err != nil {
+		return SignedValidityWindow{}, err
+	}
+	w := SignedValidityWindow{
+		ValidityWindow: ValidityWindow{
+			BatchNumber: batch.Number,
+			TreeHeads:   newHeads,
+		},
+	}
+	toSign, err := w.ValidityWindow.LabeledValdityWindow(batch.CA)
+	if err != nil {
+		return SignedValidityWindow{}, fmt.Errorf(
+			"computing LabeledValidityWindow: %w",
+			err,
+		)
+	}
+	w.Signature = signer.Sign(toSign)
+	return w, nil
 }
 
 func NewTLSSubject(scheme SignatureScheme, pk crypto.PublicKey) (*TLSSubject, error) {
@@ -595,7 +815,7 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 			subject AbridgedTLSSubject
 		)
 		if !subjectInfo.ReadUint16((*uint16)(&subject.SignatureScheme)) ||
-			!subjectInfo.ReadBytes(&pkHash, hashLen) {
+			!subjectInfo.ReadBytes(&pkHash, HashLen) {
 			return ErrTruncated
 		}
 		if !subjectInfo.Empty() {
@@ -615,7 +835,7 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 
 // Return root of the tree
 func (t *Tree) Root() []byte {
-	return t.buf[len(t.buf)-hashLen : len(t.buf)]
+	return t.buf[len(t.buf)-HashLen : len(t.buf)]
 }
 
 // Return authentication path proving that the leaf at the given index
@@ -630,15 +850,15 @@ func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
 	nNodes := t.nLeaves
 	for nNodes != 1 {
 		index ^= 1 // index of sibling
-		start := offset + int(hashLen*index)
-		_, _ = ret.Write(t.buf[start : start+hashLen])
+		start := offset + int(HashLen*index)
+		_, _ = ret.Write(t.buf[start : start+HashLen])
 
 		// Account for the empty node
 		if nNodes&1 == 1 {
 			nNodes++
 		}
 
-		offset += hashLen * int(nNodes)
+		offset += HashLen * int(nNodes)
 		index >>= 1
 		nNodes >>= 1
 	}
@@ -653,7 +873,7 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 
 	// First read all abridged assertions and hash them.
 	var index uint64
-	hash := make([]byte, hashLen)
+	hash := make([]byte, HashLen)
 
 	err := unmarshal(r, func(aa *AbridgedAssertion) error {
 		err := aa.Hash(hash, batch, index)
@@ -677,7 +897,7 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 // Return nil on valid authentication path.
 func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
 	aa *AbridgedAssertion) error {
-	h := make([]byte, hashLen)
+	h := make([]byte, HashLen)
 	if err := aa.Hash(h[:], batch, index); err != nil {
 		return err
 	}
@@ -685,11 +905,11 @@ func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
 	level := uint8(0)
 	var left, right []byte
 	for len(path) != 0 {
-		if len(path) < hashLen {
+		if len(path) < HashLen {
 			return ErrTruncated
 		}
 
-		left, right, path = h, path[:hashLen], path[hashLen:]
+		left, right, path = h, path[:HashLen], path[HashLen:]
 		if index&1 == 1 {
 			left, right = right, left
 		}
@@ -763,13 +983,13 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 		return nil, fmt.Errorf("HashLeaves: %w", err)
 	}
 
-	nLeaves := uint64(len(leaves)) / uint64(hashLen)
+	nLeaves := uint64(len(leaves)) / uint64(HashLen)
 	buf := bytes.NewBuffer(leaves)
 
 	if nLeaves == 0 {
 		tree := &Tree{
 			nLeaves: 0,
-			buf:     make([]byte, hashLen),
+			buf:     make([]byte, HashLen),
 		}
 		if err := batch.hashEmpty(tree.buf[:], 0, 0); err != nil {
 			return nil, err
@@ -799,16 +1019,16 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 		level++
 
 		for i := uint64(0); i < nNodes; i++ {
-			leftRight := buf.Bytes()[offset+2*hashLen*int(i):]
-			left := leftRight[:hashLen]
-			right := leftRight[hashLen : 2*hashLen]
+			leftRight := buf.Bytes()[offset+2*HashLen*int(i):]
+			left := leftRight[:HashLen]
+			right := leftRight[HashLen : 2*HashLen]
 			if err := batch.hashNode(h, left, right, i, level); err != nil {
 				return nil, err
 			}
 			_, _ = buf.Write(h)
 		}
 
-		offset += 2 * int(nNodes*hashLen)
+		offset += 2 * int(nNodes*HashLen)
 	}
 
 	return &Tree{buf: buf.Bytes(), nLeaves: nLeaves}, nil

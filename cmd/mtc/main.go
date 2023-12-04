@@ -115,9 +115,17 @@ func handleCaQueue(cc *cli.Context) error {
 	}
 	defer h.Close()
 
-	err = h.Queue(a, checksum)
+	return h.Queue(a, checksum)
+}
 
-	return nil
+func handleCaIssue(cc *cli.Context) error {
+	h, err := ca.Open(cc.String("ca-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	return h.Issue()
 }
 
 func handleCaShowQueue(cc *cli.Context) error {
@@ -176,6 +184,10 @@ func handleCaNew(cc *cli.Context) error {
 		ca.NewOpts{
 			IssuerId:   cc.Args().Get(0),
 			HttpServer: cc.Args().Get(1),
+
+			BatchDuration:   cc.Duration("batch-duration"),
+			StorageDuration: cc.Duration("storage-duration"),
+			Lifetime:        cc.Duration("lifetime"),
 		},
 	)
 	if err != nil {
@@ -212,6 +224,8 @@ func handleInspectCaParams(cc *cli.Context) error {
 		time.Second*time.Duration(p.BatchDuration))
 	fmt.Fprintf(w, "life_time\t%d\t%s\n", p.Lifetime,
 		time.Second*time.Duration(p.Lifetime))
+	fmt.Fprintf(w, "storage_window_size\t%d\t%s\n", p.StorageWindowSize,
+		time.Second*time.Duration(p.BatchDuration*p.StorageWindowSize))
 	fmt.Fprintf(w, "validity_window_size\t%d\n", p.ValidityWindowSize)
 	fmt.Fprintf(w, "http_server\t%s\n", p.HttpServer)
 	w.Flush()
@@ -236,6 +250,23 @@ func main() {
 						Usage:     "creates a new CA",
 						Action:    handleCaNew,
 						ArgsUsage: "<issuer-id> <http-server>",
+						Flags: []cli.Flag{
+							&cli.DurationFlag{
+								Name:    "batch-duration",
+								Aliases: []string{"b"},
+								Usage:   "time between batches",
+							},
+							&cli.DurationFlag{
+								Name:    "lifetime",
+								Aliases: []string{"l"},
+								Usage:   "lifetime of an assertion",
+							},
+							&cli.DurationFlag{
+								Name:    "storage-duration",
+								Aliases: []string{"s"},
+								Usage:   "time to serve assertions",
+							},
+						},
 					},
 					{
 						Name:   "show-queue",
@@ -243,8 +274,13 @@ func main() {
 						Action: handleCaShowQueue,
 					},
 					{
+						Name:   "issue",
+						Usage:  "certify and issue queued assertions",
+						Action: handleCaIssue,
+					},
+					{
 						Name:   "queue",
-						Usage:  "queue assertion for publication",
+						Usage:  "queue assertion for issuance",
 						Action: handleCaQueue,
 						Flags: []cli.Flag{
 							&cli.StringSliceFlag{
