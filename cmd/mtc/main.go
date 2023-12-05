@@ -117,7 +117,13 @@ func handleCaQueue(cc *cli.Context) error {
 	}
 	defer h.Close()
 
-	return h.Queue(a, checksum)
+	for i := 0; i < cc.Int("debug-repeat"); i++ {
+		err = h.Queue(a, checksum)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func handleCaIssue(cc *cli.Context) error {
@@ -330,6 +336,12 @@ func main() {
 								Category: "Other",
 								Usage:    "Only proceed if checksum matches",
 							},
+							&cli.IntFlag{
+								Name:     "debug-repeat",
+								Category: "Debug",
+								Usage:    "Queue the same assertion several times",
+								Value:    1,
+							},
 						},
 					},
 				},
@@ -346,8 +358,8 @@ func main() {
 				},
 			},
 		},
-		Before: func(c *cli.Context) error {
-			if path := c.String("cpuprofile"); path != "" {
+		Before: func(cc *cli.Context) error {
+			if path := cc.String("cpuprofile"); path != "" {
 				var err error
 				fCpuProfile, err = os.Create(path)
 				if err != nil {
@@ -357,7 +369,7 @@ func main() {
 			}
 			return nil
 		},
-		After: func(c *cli.Context) error {
+		After: func(cc *cli.Context) error {
 			if fCpuProfile != nil {
 				pprof.StopCPUProfile()
 			}
