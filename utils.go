@@ -39,7 +39,7 @@ func unmarshal[T unmarshaler](r io.Reader, f func(T) error) error {
 	var msg T
 	reflect.ValueOf(&msg).Elem().Set(reflect.New(reflect.TypeOf(msg).Elem()))
 
-	buf := make([]byte, 10)
+	buf := make([]byte, 512)
 	s := cryptobyte.String(buf[:0])
 	maxSize := msg.maxSize()
 

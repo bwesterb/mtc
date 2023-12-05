@@ -117,13 +117,19 @@ func handleCaQueue(cc *cli.Context) error {
 	}
 	defer h.Close()
 
-	for i := 0; i < cc.Int("debug-repeat"); i++ {
-		err = h.Queue(a, checksum)
-		if err != nil {
-			return err
+	return h.QueueMultiple(func(yield func(qa ca.QueuedAssertion) error) error {
+		for i := 0; i < cc.Int("debug-repeat"); i++ {
+			if err := yield(
+				ca.QueuedAssertion{
+					Assertion: a,
+					Checksum:  checksum,
+				},
+			); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func handleCaIssue(cc *cli.Context) error {

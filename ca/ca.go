@@ -126,44 +126,62 @@ func (h *Handle) dropQueue() error {
 	return nil
 }
 
-// Queue assertion for publication.
+// Queue multiple assertions for publication.
 //
-// If checksum is not nil, makes sure assertion matches the checksum.
-func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
+// For each entry, if checksum is not nil, makes sure the assertion
+// matches the checksum
+func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) error) error {
 	if h.closed {
 		return ErrClosed
 	}
-	qa := QueuedAssertion{
-		Checksum:  checksum,
-		Assertion: a,
-	}
-
-	buf, err := qa.MarshalBinary()
-	if err != nil {
-		return err
-	}
-
-	var b cryptobyte.Builder
-	b.AddUint16(uint16(len(buf)))
-	prefix, _ := b.Bytes()
 
 	w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening queue: %w", err)
 	}
 	defer w.Close()
+	bw := bufio.NewWriter(w)
 
-	_, err = w.Write(prefix)
-	if err != nil {
-		return fmt.Errorf("writing to queue: %w", err)
+	if err := it(func(qa QueuedAssertion) error {
+		buf, err := qa.MarshalBinary()
+		if err != nil {
+			return err
+		}
+
+		var b cryptobyte.Builder
+		b.AddUint16(uint16(len(buf)))
+		prefix, _ := b.Bytes()
+
+		_, err = bw.Write(prefix)
+		if err != nil {
+			return fmt.Errorf("writing to queue: %w", err)
+		}
+
+		_, err = bw.Write(buf)
+		if err != nil {
+			return fmt.Errorf("writing to queue: %w", err)
+		}
+
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	_, err = w.Write(buf)
-	if err != nil {
-		return fmt.Errorf("writing to queue: %w", err)
-	}
+	return bw.Flush()
+}
 
-	return nil
+// Queue assertion for publication.
+//
+// If checksum is not nil, makes sure assertion matches the checksum.
+func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
+	return h.QueueMultiple(func(yield func(qa QueuedAssertion) error) error {
+		return yield(
+			QueuedAssertion{
+				Checksum:  checksum,
+				Assertion: a,
+			},
+		)
+	})
 }
 
 // Load private state of Merkle Tree CA, and acquire lock.
@@ -609,6 +627,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		return fmt.Errorf("creating %s: %w", aasPath, err)
 	}
 	defer aasW.Close()
+	aasBW := bufio.NewWriter(aasW)
 
 	if !empty {
 		err = h.WalkQueue(func(qa QueuedAssertion) error {
@@ -618,7 +637,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 				return fmt.Errorf("Marshalling assertion %x: %w", qa.Checksum, err)
 			}
 
-			_, err = aasW.Write(buf)
+			_, err = aasBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
 					"Writing assertion %x to %s: %w",
@@ -633,6 +652,11 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		}
 	}
 
+	err = aasBW.Flush()
+	if err != nil {
+		return fmt.Errorf("flushing %s: %w", aasPath, err)
+	}
+
 	err = aasW.Close()
 	if err != nil {
 		return fmt.Errorf("closing %s: %w", aasPath, err)
@@ -641,9 +665,10 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", aasPath, err)
 	}
+	defer aasR.Close()
 
 	// Compute tree
-	tree, err := batch.ComputeTree(aasR)
+	tree, err := batch.ComputeTree(bufio.NewReader(aasR))
 	if err != nil {
 		return fmt.Errorf("computing tree: %w", err)
 	}
