@@ -14,12 +14,14 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime/pprof"
 	"text/tabwriter"
 	"time"
 )
 
 var (
-	errArgs = errors.New("Wrong number of arguments")
+	errArgs     = errors.New("Wrong number of arguments")
+	fCpuProfile *os.File
 )
 
 func handleCaQueue(cc *cli.Context) error {
@@ -234,6 +236,12 @@ func handleInspectCaParams(cc *cli.Context) error {
 
 func main() {
 	app := &cli.App{
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "cpuprofile",
+				Usage: "write cpu profile to file",
+			},
+		},
 		Commands: []*cli.Command{
 			{
 				Name: "ca",
@@ -337,6 +345,23 @@ func main() {
 					},
 				},
 			},
+		},
+		Before: func(c *cli.Context) error {
+			if path := c.String("cpuprofile"); path != "" {
+				var err error
+				fCpuProfile, err = os.Create(path)
+				if err != nil {
+					return fmt.Errorf("create(%s): %w", path, err)
+				}
+				pprof.StartCPUProfile(fCpuProfile)
+			}
+			return nil
+		},
+		After: func(c *cli.Context) error {
+			if fCpuProfile != nil {
+				pprof.StopCPUProfile()
+			}
+			return nil
 		},
 	}
 
