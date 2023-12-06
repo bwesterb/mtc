@@ -281,7 +281,7 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 		fmt.Fprintf(
 			w,
 			"tree_heads[%d]\t%x\n",
-			i,
+			int(sw.ValidityWindow.BatchNumber)+i-int(p.ValidityWindowSize)+1,
 			sw.ValidityWindow.TreeHeads[mtc.HashLen*i:mtc.HashLen*(i+1)],
 		)
 	}
