@@ -305,6 +305,42 @@ func (t *Tree) WriteTo(w io.Writer) error {
 	return nil
 }
 
+func (t *Tree) NodeCount() uint {
+	if t.nLeaves == 0 {
+		return 1
+	}
+
+	nodesInLayer := uint(t.nLeaves)
+	ret := uint(0)
+	for nodesInLayer != 1 {
+		if nodesInLayer&1 == 1 {
+			nodesInLayer++
+		}
+
+		ret += nodesInLayer
+		nodesInLayer >>= 1
+	}
+	ret++ // we didn't count the root yet
+	return ret
+}
+
+func (t *Tree) UnmarshalBinary(buf []byte) error {
+	s := cryptobyte.String(buf)
+	if !s.ReadUint64(&t.nLeaves) {
+		return ErrTruncated
+	}
+
+	nNodes := t.NodeCount()
+
+	if !s.ReadBytes(&t.buf, int(nNodes)*HashLen) {
+		return ErrTruncated
+	}
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+	return nil
+}
+
 func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
 	buf, err := c.Assertion.MarshalBinary()
@@ -851,6 +887,10 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	}
 
 	return nil
+}
+
+func (t *Tree) LeafCount() uint64 {
+	return t.nLeaves
 }
 
 // Return root of the tree

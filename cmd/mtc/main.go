@@ -290,6 +290,26 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 	return nil
 }
 
+func handleInspectTree(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+
+	var t mtc.Tree
+	err = t.UnmarshalBinary(buf)
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	fmt.Fprintf(w, "number of leaves\t%d\n", t.LeafCount())
+	fmt.Fprintf(w, "number of nodes\t%d\n", t.NodeCount())
+	fmt.Fprintf(w, "root\t%x\n", t.Root())
+	w.Flush()
+	return nil
+}
+
 func handleInspectAbridgedAssertions(cc *cli.Context) error {
 	r, err := inspectGetReader(cc)
 	if err != nil {
@@ -483,14 +503,20 @@ func main() {
 					},
 					{
 						Name:      "signed-validity-window",
-						Usage:     "parses signed-validity-window file",
+						Usage:     "parses batch's signed-validity-window file",
 						Action:    handleInspectSignedValidityWindow,
 						ArgsUsage: "[path]",
 					},
 					{
 						Name:      "abridged-assertions",
-						Usage:     "parses abridged-assertions file",
+						Usage:     "parses batch's abridged-assertions file",
 						Action:    handleInspectAbridgedAssertions,
+						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "tree",
+						Usage:     "parses batch's tree file",
+						Action:    handleInspectTree,
 						ArgsUsage: "[path]",
 					},
 				},
