@@ -240,6 +240,10 @@ func (h Handle) batchesPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "batches")
 }
 
+func (h Handle) tmpPath() string {
+	return gopath.Join(h.path, "tmp")
+}
+
 func (h Handle) getSignedValidityWindow(number uint32) (
 	*mtc.SignedValidityWindow, error) {
 	var w mtc.SignedValidityWindow
@@ -491,11 +495,11 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 	deleteDir1 := true
 
 	// We perform issuance twice, and compare results.
-	dir1, err := os.MkdirTemp(h.batchesPath(), "staging1-*")
+	dir1, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch1-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
-	dir2, err := os.MkdirTemp(h.batchesPath(), "staging2-*")
+	dir2, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch2-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
@@ -806,6 +810,12 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	err = os.MkdirAll(pubPath, 0o755)
 	if err != nil {
 		return nil, fmt.Errorf("os.MkdirAll(%s): %w", pubPath, err)
+	}
+
+	tmpPath := h.tmpPath()
+	err = os.MkdirAll(tmpPath, 0o755)
+	if err != nil {
+		return nil, fmt.Errorf("os.MkdirAll(%s): %w", tmpPath, err)
 	}
 
 	// Queue
