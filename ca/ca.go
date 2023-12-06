@@ -236,6 +236,10 @@ func (h Handle) batchPath(number uint32) string {
 	return gopath.Join(h.batchesPath(), fmt.Sprintf("%d", number))
 }
 
+func (h Handle) latestBatchPath() string {
+	return gopath.Join(h.batchesPath(), "latest")
+}
+
 func (h Handle) batchesPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "batches")
 }
@@ -555,6 +559,32 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		}
 	}
 
+	err = h.updateLatest(number)
+	if err != nil {
+		return fmt.Errorf("Updating latest symlink: %w", err)
+	}
+
+	return nil
+}
+
+// Updates the latest symlink to point to the given batch
+func (h *Handle) updateLatest(number uint32) error {
+	dir, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("symlink-%d-*", number))
+	if err != nil {
+		return fmt.Errorf("creating temporary directory: %w", err)
+	}
+
+	newLatest := gopath.Join(dir, "latest")
+
+	err = os.Symlink(fmt.Sprintf("%d", number), newLatest)
+	if err != nil {
+		return err
+	}
+
+	err = os.Rename(newLatest, h.latestBatchPath())
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
