@@ -512,6 +512,20 @@ func (w *ValidityWindow) unmarshal(s *cryptobyte.String, p *CAParams) error {
 }
 
 func (w *SignedValidityWindow) UnmarshalBinary(data []byte, p *CAParams) error {
+	err := w.UnmarshalBinaryWithoutVerification(data, p)
+	if err != nil {
+		return err
+	}
+	toSign, err := w.ValidityWindow.LabeledValdityWindow(p)
+	if err != nil {
+		return err
+	}
+	return p.PublicKey.Verify(toSign, w.Signature)
+}
+
+// Like UnmarshalBinary() but doesn't check the signature.
+func (w *SignedValidityWindow) UnmarshalBinaryWithoutVerification(
+	data []byte, p *CAParams) error {
 	s := cryptobyte.String(data)
 	err := w.ValidityWindow.unmarshal(&s, p)
 	if err != nil {

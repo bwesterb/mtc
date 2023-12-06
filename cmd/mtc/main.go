@@ -220,6 +220,54 @@ func inspectGetBuf(cc *cli.Context) ([]byte, error) {
 	return os.ReadFile(cc.Args().Get(0))
 }
 
+func inspectGetCAParams(cc *cli.Context) (*mtc.CAParams, error) {
+	var p mtc.CAParams
+	path := cc.String("ca-params")
+	if path == "" {
+		return nil, errors.New("missing ca-params flag")
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if err := p.UnmarshalBinary(buf); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return &p, nil
+}
+
+func handleInspectSignedValidityWindow(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+	p, err := inspectGetCAParams(cc)
+	if err != nil {
+		return err
+	}
+
+	var sw mtc.SignedValidityWindow
+	err = sw.UnmarshalBinary(buf, p) // this also checks the signature
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	fmt.Fprintf(w, "signature\t✅\n")
+	fmt.Fprintf(w, "batch_number\t%d\n", sw.ValidityWindow.BatchNumber)
+	for i := 0; i < int(p.ValidityWindowSize); i++ {
+		fmt.Fprintf(
+			w,
+			"tree_heads[%d]\t%x\n",
+			i,
+			sw.ValidityWindow.TreeHeads[mtc.HashLen*i:mtc.HashLen*(i+1)],
+		)
+	}
+
+	w.Flush()
+	return nil
+}
+
 func handleInspectCaParams(cc *cli.Context) error {
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
@@ -242,6 +290,11 @@ func handleInspectCaParams(cc *cli.Context) error {
 		time.Second*time.Duration(p.BatchDuration*p.StorageWindowSize))
 	fmt.Fprintf(w, "validity_window_size\t%d\n", p.ValidityWindowSize)
 	fmt.Fprintf(w, "http_server\t%s\n", p.HttpServer)
+	fmt.Fprintf(
+		w,
+		"public_key fingerprint\t%s\n",
+		mtc.VerifierFingerprint(p.PublicKey),
+	)
 	w.Flush()
 	return nil
 }
@@ -360,6 +413,19 @@ func main() {
 						Usage:     "parses ca-params file",
 						Action:    handleInspectCaParams,
 						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "signed-validity-window",
+						Usage:     "parses signed-validity-window file",
+						Action:    handleInspectSignedValidityWindow,
+						ArgsUsage: "[path]",
+					},
+				},
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "ca-params",
+						Usage:   "path to CA parameters required to parse some files",
+						Aliases: []string{"p"},
 					},
 				},
 			},

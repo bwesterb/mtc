@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -339,4 +340,11 @@ func SignatureSchemesFor(pk crypto.PublicKey) []SignatureScheme {
 		return []SignatureScheme{TLSDilitihium5r3}
 	}
 	return []SignatureScheme{}
+}
+
+// Returns [scheme]:[sha256]
+func VerifierFingerprint(v Verifier) string {
+	buf := v.Bytes()
+	h := sha256.Sum256(buf)
+	return fmt.Sprintf("%s:%x", v.Scheme(), h)
 }
