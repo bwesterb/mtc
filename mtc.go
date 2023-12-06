@@ -912,6 +912,14 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
+// Unmarshals AbridgedAssertions from r and calls f for each.
+//
+// Returns early one rror.
+func UnmarshalAbridgedAssertions(r io.Reader,
+	f func(*AbridgedAssertion) error) error {
+	return unmarshal(r, f)
+}
+
 // Check validity of authentication path.
 //
 // Return nil on valid authentication path.

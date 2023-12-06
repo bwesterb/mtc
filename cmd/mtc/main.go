@@ -6,6 +6,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"bufio"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -214,10 +215,31 @@ func handleCaNew(cc *cli.Context) error {
 // Get the data at hand to inspect for an inspect subcommand, by either
 // reading it from stdin or a file
 func inspectGetBuf(cc *cli.Context) ([]byte, error) {
-	if cc.Args().Len() == 0 {
-		return io.ReadAll(os.Stdin)
+	r, err := inspectGetReader(cc)
+	if err != nil {
+		return nil, err
 	}
-	return os.ReadFile(cc.Args().Get(0))
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	err = r.Close()
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// Same as inspectGetBuf(), but returns a io.ReadCloser instead.
+func inspectGetReader(cc *cli.Context) (io.ReadCloser, error) {
+	if cc.Args().Len() == 0 {
+		return os.Stdin, nil
+	}
+	r, err := os.Open(cc.Args().Get(0))
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 func inspectGetCAParams(cc *cli.Context) (*mtc.CAParams, error) {
@@ -265,6 +287,51 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 	}
 
 	w.Flush()
+	return nil
+}
+
+func handleInspectAbridgedAssertions(cc *cli.Context) error {
+	r, err := inspectGetReader(cc)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	count := 0
+	err = mtc.UnmarshalAbridgedAssertions(
+		bufio.NewReader(r),
+		func(aa *mtc.AbridgedAssertion) error {
+			count++
+			cs := aa.Claims
+			subj := aa.Subject
+			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+			fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+			switch subj := subj.(type) {
+			case *mtc.AbridgedTLSSubject:
+				fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
+				fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
+			}
+			if len(cs.DNS) != 0 {
+				fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+			}
+			if len(cs.DNSWildcard) != 0 {
+				fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+			}
+			if len(cs.IPv4) != 0 {
+				fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
+			}
+			if len(cs.IPv6) != 0 {
+				fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+			}
+			w.Flush()
+			fmt.Printf("\n")
+			return nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Total number of abridged assertions: %d\n", count)
 	return nil
 }
 
@@ -418,6 +485,12 @@ func main() {
 						Name:      "signed-validity-window",
 						Usage:     "parses signed-validity-window file",
 						Action:    handleInspectSignedValidityWindow,
+						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "abridged-assertions",
+						Usage:     "parses abridged-assertions file",
+						Action:    handleInspectAbridgedAssertions,
 						ArgsUsage: "[path]",
 					},
 				},
