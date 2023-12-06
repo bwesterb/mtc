@@ -134,7 +134,7 @@ func testComputeTree(t testing.TB, batchSize int) {
 	batch, tree, as := createTestBatch(t, batchSize)
 
 	root := tree.Root()
-	incorrectRoot := make([]byte, hashLen)
+	incorrectRoot := make([]byte, HashLen)
 
 	for i := 0; i < batchSize && i < len(as); i++ {
 		path, err := tree.AuthenticationPath(uint64(i))
