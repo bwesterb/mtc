@@ -78,9 +78,7 @@ func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
-	var b cryptobyte.Builder
-
+func (a *QueuedAssertion) marshalAndCheckAssertion() ([]byte, error) {
 	buf, err := a.Assertion.MarshalBinary()
 	if err != nil {
 		return nil, err
@@ -91,6 +89,24 @@ func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
 		a.Checksum = checksum2[:]
 	} else if !bytes.Equal(checksum2[:], a.Checksum) {
 		return nil, ErrChecksumInvalid
+	}
+
+	return buf, nil
+}
+
+// If set, checks whether the Checksum is correct. If not set, sets the
+// Checksum to the correct value.
+func (a *QueuedAssertion) Check() error {
+	_, err := a.marshalAndCheckAssertion()
+	return err
+}
+
+func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
+	var b cryptobyte.Builder
+
+	buf, err := a.marshalAndCheckAssertion()
+	if err != nil {
+		return nil, err
 	}
 	b.AddBytes(a.Checksum)
 	b.AddBytes(buf)

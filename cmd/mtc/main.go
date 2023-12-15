@@ -25,11 +25,153 @@ var (
 	fCpuProfile *os.File
 )
 
-func handleCaQueue(cc *cli.Context) error {
+// Writes buf either to stdout (if path is empty) or path.
+func writeToFileOrStdout(path string, buf []byte) error {
+	if path != "" {
+		err := os.WriteFile(path, buf, 0644)
+		if err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+		return nil
+	}
+
+	_, err := os.Stdout.Write(buf)
+	if err != nil {
+		return fmt.Errorf("writing to stdout: %w", err)
+	}
+
+	return nil
+}
+
+// Flags used to create or specify an assertion. Used in `mtc ca queue'.
+// Includes the in-file flag, if inFile is true.
+func assertionFlags(inFile bool) []cli.Flag {
+	ret := []cli.Flag{
+		&cli.StringSliceFlag{
+			Name:     "dns",
+			Aliases:  []string{"d"},
+			Category: "Assertion",
+		},
+		&cli.StringSliceFlag{
+			Name:     "dns-wildcard",
+			Aliases:  []string{"w"},
+			Category: "Assertion",
+		},
+		&cli.StringSliceFlag{
+			Name:     "ip4",
+			Category: "Assertion",
+		},
+		&cli.StringSliceFlag{
+			Name:     "ip6",
+			Category: "Assertion",
+		},
+
+		&cli.StringFlag{
+			Name:     "tls-pem",
+			Category: "Assertion",
+			Usage:    "path to PEM encoded subject public key",
+		},
+		&cli.StringFlag{
+			Name:     "tls-der",
+			Category: "Assertion",
+			Usage:    "path to DER encoded subject public key",
+		},
+		&cli.StringFlag{
+			Name:     "tls-scheme",
+			Category: "Assertion",
+			Usage:    "TLS signature scheme to be used by subject",
+		},
+		&cli.StringFlag{
+			Name:     "checksum",
+			Category: "Assertion",
+			Usage:    "Only proceed if assertion matches checksum",
+		},
+	}
+	if inFile {
+		ret = append(
+			ret,
+			&cli.StringFlag{
+				Name:     "in-file",
+				Category: "Assertion",
+				Aliases:  []string{"i"},
+				Usage:    "Read assertion from the given file",
+			},
+		)
+	}
+
+	return ret
+}
+
+func assertionFromFlags(cc *cli.Context) (*ca.QueuedAssertion, error) {
+	qa, err := assertionFromFlagsUnchecked(cc)
+	if err != nil {
+		return nil, err
+	}
+
+	err = qa.Check()
+	if err != nil {
+		return nil, err
+	}
+
+	return qa, nil
+}
+
+func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 	var (
 		checksum []byte
 		err      error
 	)
+
+	if cc.String("checksum") != "" {
+		checksum, err = hex.DecodeString(cc.String("checksum"))
+		if err != nil {
+			fmt.Errorf("Parsing checksum: %w", err)
+		}
+	}
+
+	assertionPath := cc.String("in-file")
+	if assertionPath != "" {
+		assertionBuf, err := os.ReadFile(assertionPath)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"reading assertion %s: %w",
+				assertionPath,
+				err,
+			)
+		}
+
+		for _, flag := range []string{
+			"dns",
+			"dns-wildcard",
+			"ip4",
+			"ip6",
+			"tls-der",
+			"tls-pem",
+		} {
+			if cc.IsSet(flag) {
+				return nil, fmt.Errorf(
+					"Can't specify --in-file and --%s together",
+					flag,
+				)
+			}
+		}
+
+		var a mtc.Assertion
+		err = a.UnmarshalBinary(assertionBuf)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parsing assertion %s: %w",
+				assertionPath,
+				err,
+			)
+		}
+
+		return &ca.QueuedAssertion{
+			Assertion: a,
+			Checksum:  checksum,
+		}, nil
+	}
+
 	cs := mtc.Claims{
 		DNS:         cc.StringSlice("dns"),
 		DNSWildcard: cc.StringSlice("dns-wildcard"),
@@ -47,7 +189,7 @@ func handleCaQueue(cc *cli.Context) error {
 		cc.String("tls-der") == "") ||
 		(cc.String("tls-pem") != "" &&
 			cc.String("tls-der") != "") {
-		return errors.New("Expect either tls-pem or tls-der flag")
+		return nil, errors.New("Expect either tls-pem or tls-der flag")
 	}
 
 	usingPem := false
@@ -59,13 +201,13 @@ func handleCaQueue(cc *cli.Context) error {
 
 	subjectBuf, err := os.ReadFile(subjectPath)
 	if err != nil {
-		return fmt.Errorf("reading subject %s: %w", subjectPath, err)
+		return nil, fmt.Errorf("reading subject %s: %w", subjectPath, err)
 	}
 
 	if usingPem {
 		block, _ := pem.Decode([]byte(subjectBuf))
 		if block == nil {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"reading subject %s: failed to parse PEM block",
 				subjectPath,
 			)
@@ -75,29 +217,34 @@ func handleCaQueue(cc *cli.Context) error {
 
 	pub, err := x509.ParsePKIXPublicKey(subjectBuf)
 	if err != nil {
-		return fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
+		return nil, fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
 	}
 
 	var scheme mtc.SignatureScheme
 	if cc.String("tls-scheme") != "" {
 		scheme = mtc.SignatureSchemeFromString(cc.String("tls-scheme"))
 		if scheme == 0 {
-			return fmt.Errorf("Unknown TLS signature scheme: %s", scheme)
+			return nil, fmt.Errorf("Unknown TLS signature scheme: %s", scheme)
 		}
 	} else {
 		schemes := mtc.SignatureSchemesFor(pub)
 		if len(schemes) == 0 {
-			return fmt.Errorf("No matching signature scheme for that public key")
+			return nil, fmt.Errorf(
+				"No matching signature scheme for that public key",
+			)
 		}
 		if len(schemes) >= 2 {
-			return fmt.Errorf("Specify --tls-scheme with one of %s", schemes)
+			return nil, fmt.Errorf(
+				"Specify --tls-scheme with one of %s",
+				schemes,
+			)
 		}
 		scheme = schemes[0]
 	}
 
 	subj, err := mtc.NewTLSSubject(scheme, pub)
 	if err != nil {
-		return fmt.Errorf("creating subject: %w", err)
+		return nil, fmt.Errorf("creating subject: %w", err)
 	}
 
 	a := mtc.Assertion{
@@ -105,11 +252,16 @@ func handleCaQueue(cc *cli.Context) error {
 		Subject: subj,
 	}
 
-	if cc.String("checksum") != "" {
-		checksum, err = hex.DecodeString(cc.String("checksum"))
-		if err != nil {
-			fmt.Errorf("Parsing checksum: %w", err)
-		}
+	return &ca.QueuedAssertion{
+		Assertion: a,
+		Checksum:  checksum,
+	}, nil
+}
+
+func handleCaQueue(cc *cli.Context) error {
+	qa, err := assertionFromFlags(cc)
+	if err != nil {
+		return err
 	}
 
 	h, err := ca.Open(cc.String("ca-path"))
@@ -120,17 +272,32 @@ func handleCaQueue(cc *cli.Context) error {
 
 	return h.QueueMultiple(func(yield func(qa ca.QueuedAssertion) error) error {
 		for i := 0; i < cc.Int("debug-repeat"); i++ {
-			if err := yield(
-				ca.QueuedAssertion{
-					Assertion: a,
-					Checksum:  checksum,
-				},
-			); err != nil {
+			if err := yield(*qa); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+func handleNewAssertion(cc *cli.Context) error {
+	qa, err := assertionFromFlags(cc)
+	if err != nil {
+		return err
+	}
+
+	buf, err := qa.Assertion.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	if err := writeToFileOrStdout(cc.String("out-file"), buf); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "checksum: %x\n", qa.Checksum)
+
+	return nil
 }
 
 func handleCaIssue(cc *cli.Context) error {
@@ -310,6 +477,45 @@ func handleInspectTree(cc *cli.Context) error {
 	return nil
 }
 
+func handleInspectAssertion(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+
+	var a mtc.Assertion
+	err = a.UnmarshalBinary(buf)
+	if err != nil {
+		return err
+	}
+
+	aa := a.Abridge()
+
+	cs := aa.Claims
+	subj := aa.Subject
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+	switch subj := subj.(type) {
+	case *mtc.AbridgedTLSSubject:
+		fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
+		fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
+	}
+	if len(cs.DNS) != 0 {
+		fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+	}
+	if len(cs.DNSWildcard) != 0 {
+		fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+	}
+	if len(cs.IPv4) != 0 {
+		fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
+	}
+	if len(cs.IPv6) != 0 {
+		fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+	}
+	w.Flush()
+	return nil
+}
+
 func handleInspectAbridgedAssertions(cc *cli.Context) error {
 	r, err := inspectGetReader(cc)
 	if err != nil {
@@ -442,53 +648,15 @@ func main() {
 						Name:   "queue",
 						Usage:  "queue assertion for issuance",
 						Action: handleCaQueue,
-						Flags: []cli.Flag{
-							&cli.StringSliceFlag{
-								Name:     "dns",
-								Aliases:  []string{"d"},
-								Category: "Claim",
-							},
-							&cli.StringSliceFlag{
-								Name:     "dns-wildcard",
-								Aliases:  []string{"w"},
-								Category: "Claim",
-							},
-							&cli.StringSliceFlag{
-								Name:     "ip4",
-								Category: "Claim",
-							},
-							&cli.StringSliceFlag{
-								Name:     "ip6",
-								Category: "Claim",
-							},
-
-							&cli.StringFlag{
-								Name:     "tls-pem",
-								Category: "Subject",
-								Usage:    "path to PEM encoded subject public key",
-							},
-							&cli.StringFlag{
-								Name:     "tls-der",
-								Category: "Subject",
-								Usage:    "path to DER encoded subject public key",
-							},
-							&cli.StringFlag{
-								Name:     "tls-scheme",
-								Category: "Subject",
-								Usage:    "TLS signature scheme to be used by subject",
-							},
-							&cli.StringFlag{
-								Name:     "checksum",
-								Category: "Other",
-								Usage:    "Only proceed if checksum matches",
-							},
+						Flags: append(
+							assertionFlags(true),
 							&cli.IntFlag{
 								Name:     "debug-repeat",
 								Category: "Debug",
 								Usage:    "Queue the same assertion several times",
 								Value:    1,
 							},
-						},
+						),
 					},
 				},
 			},
@@ -514,6 +682,12 @@ func main() {
 						ArgsUsage: "[path]",
 					},
 					{
+						Name:      "assertion",
+						Usage:     "parses an assertion",
+						Action:    handleInspectAssertion,
+						ArgsUsage: "[path]",
+					},
+					{
 						Name:      "tree",
 						Usage:     "parses batch's tree file",
 						Action:    handleInspectTree,
@@ -527,6 +701,19 @@ func main() {
 						Aliases: []string{"p"},
 					},
 				},
+			},
+			{
+				Name:   "new-assertion",
+				Usage:  "creates a new assertion",
+				Action: handleNewAssertion,
+				Flags: append(
+					assertionFlags(false),
+					&cli.StringFlag{
+						Name:    "out-file",
+						Usage:   "path to write assertion to",
+						Aliases: []string{"o"},
+					},
+				),
 			},
 		},
 		Before: func(cc *cli.Context) error {
