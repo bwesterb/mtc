@@ -590,6 +590,8 @@ func (h *Handle) updateLatest(number uint32) error {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
 
+	defer os.RemoveAll(dir)
+
 	newLatest := gopath.Join(dir, "latest")
 
 	err = os.Symlink(fmt.Sprintf("%d", number), newLatest)
