@@ -5,6 +5,7 @@ import (
 	"github.com/bwesterb/mtc/ca"
 
 	"github.com/urfave/cli/v2"
+	"golang.org/x/crypto/cryptobyte"
 
 	"bufio"
 	"crypto/x509"
@@ -272,7 +273,15 @@ func handleCaQueue(cc *cli.Context) error {
 
 	return h.QueueMultiple(func(yield func(qa ca.QueuedAssertion) error) error {
 		for i := 0; i < cc.Int("debug-repeat"); i++ {
-			if err := yield(*qa); err != nil {
+			qa2 := *qa
+			if cc.Bool("debug-vary") {
+				qa2.Checksum = nil
+				qa2.Assertion.Claims.DNS = append(
+					qa2.Assertion.Claims.DNS,
+					fmt.Sprintf("%d.example.com", i),
+				)
+			}
+			if err := yield(qa2); err != nil {
 				return err
 			}
 		}
@@ -308,6 +317,35 @@ func handleCaIssue(cc *cli.Context) error {
 	defer h.Close()
 
 	return h.Issue()
+}
+
+func handleCaCert(cc *cli.Context) error {
+	h, err := ca.Open(cc.String("ca-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	qa, err := assertionFromFlags(cc)
+	if err != nil {
+		return err
+	}
+
+	cert, err := h.CertificateFor(qa.Assertion)
+	if err != nil {
+		return err
+	}
+
+	buf, err := cert.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	if err := writeToFileOrStdout(cc.String("out-file"), buf); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func handleCaShowQueue(cc *cli.Context) error {
@@ -457,6 +495,36 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 	return nil
 }
 
+func handleInspectIndex(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+
+	var (
+		key    []byte
+		seqno  uint64
+		offset uint64
+	)
+
+	s := cryptobyte.String(buf)
+
+	total := 0
+	fmt.Printf("%64s %7s %7s\n", "key", "seqno", "offset")
+	for !s.Empty() {
+		if !s.ReadBytes(&key, 32) || !s.ReadUint64(&seqno) || !s.ReadUint64(&offset) {
+			return errors.New("truncated")
+		}
+
+		fmt.Printf("%x %7d %7d\n", key, seqno, offset)
+		total++
+	}
+
+	fmt.Printf("\ntotal number of entries: %d\n", total)
+
+	return nil
+}
+
 func handleInspectTree(cc *cli.Context) error {
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
@@ -477,23 +545,10 @@ func handleInspectTree(cc *cli.Context) error {
 	return nil
 }
 
-func handleInspectAssertion(cc *cli.Context) error {
-	buf, err := inspectGetBuf(cc)
-	if err != nil {
-		return err
-	}
-
-	var a mtc.Assertion
-	err = a.UnmarshalBinary(buf)
-	if err != nil {
-		return err
-	}
-
+func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
 	aa := a.Abridge()
-
 	cs := aa.Claims
 	subj := aa.Subject
-	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 	switch subj := subj.(type) {
 	case *mtc.AbridgedTLSSubject:
@@ -512,6 +567,64 @@ func handleInspectAssertion(cc *cli.Context) error {
 	if len(cs.IPv6) != 0 {
 		fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 	}
+}
+
+func handleInspectCert(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+
+	var c mtc.BikeshedCertificate
+	err = c.UnmarshalBinary(buf)
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	writeAssertion(w, c.Assertion)
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "proof_type\t%v\n", c.Proof.TrustAnchor().ProofType())
+
+	switch anch := c.Proof.TrustAnchor().(type) {
+	case *mtc.MerkleTreeTrustAnchor:
+		fmt.Fprintf(w, "issuer_id\t%s\n", anch.IssuerId())
+		fmt.Fprintf(w, "batch\t%d\n", anch.BatchNumber())
+	}
+
+	switch proof := c.Proof.(type) {
+	case *mtc.MerkleTreeProof:
+		fmt.Fprintf(w, "index\t%d\n", proof.Index())
+	}
+
+	w.Flush()
+
+	switch proof := c.Proof.(type) {
+	case *mtc.MerkleTreeProof:
+		path := proof.Path()
+
+		fmt.Printf("authentication path\n")
+		for i := 0; i < len(path)/mtc.HashLen; i++ {
+			fmt.Printf(" %x\n", path[i*mtc.HashLen:(i+1)*mtc.HashLen])
+		}
+	}
+	return nil
+}
+
+func handleInspectAssertion(cc *cli.Context) error {
+	buf, err := inspectGetBuf(cc)
+	if err != nil {
+		return err
+	}
+
+	var a mtc.Assertion
+	err = a.UnmarshalBinary(buf)
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	writeAssertion(w, a)
 	w.Flush()
 	return nil
 }
@@ -526,11 +639,14 @@ func handleInspectAbridgedAssertions(cc *cli.Context) error {
 	count := 0
 	err = mtc.UnmarshalAbridgedAssertions(
 		bufio.NewReader(r),
-		func(aa *mtc.AbridgedAssertion) error {
+		func(_ int, aa *mtc.AbridgedAssertion) error {
 			count++
 			cs := aa.Claims
 			subj := aa.Subject
+			var key [mtc.HashLen]byte
+			aa.Key(key[:])
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+			fmt.Fprintf(w, "key\t%x\n", key)
 			fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 			switch subj := subj.(type) {
 			case *mtc.AbridgedTLSSubject:
@@ -656,6 +772,24 @@ func main() {
 								Usage:    "Queue the same assertion several times",
 								Value:    1,
 							},
+							&cli.BoolFlag{
+								Name:     "debug-vary",
+								Category: "Debug",
+								Usage:    "Varies each repeated assertion slightly",
+							},
+						),
+					},
+					{
+						Name:   "cert",
+						Usage:  "creates certificate for an issued assertion",
+						Action: handleCaCert,
+						Flags: append(
+							assertionFlags(true),
+							&cli.StringFlag{
+								Name:    "out-file",
+								Usage:   "path to write assertion to",
+								Aliases: []string{"o"},
+							},
 						),
 					},
 				},
@@ -691,6 +825,18 @@ func main() {
 						Name:      "tree",
 						Usage:     "parses batch's tree file",
 						Action:    handleInspectTree,
+						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "index",
+						Usage:     "parses batch's index file",
+						Action:    handleInspectIndex,
+						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "cert",
+						Usage:     "parses a certificate",
+						Action:    handleInspectCert,
 						ArgsUsage: "[path]",
 					},
 				},

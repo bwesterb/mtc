@@ -47,6 +47,12 @@ type Handle struct {
 	flock  lockfile.Lockfile
 	path   string
 	closed bool
+
+	indices map[uint32]*Index
+	aas     map[uint32]*os.File
+	trees   map[uint32]*Tree
+
+	batchNumbersCache []uint32 // cache for existing batches
 }
 
 type QueuedAssertion struct {
@@ -122,6 +128,19 @@ func (ca *Handle) Close() error {
 	if ca.closed {
 		return ErrClosed
 	}
+
+	for _, idx := range ca.indices {
+		idx.Close()
+	}
+
+	for _, r := range ca.aas {
+		r.Close()
+	}
+
+	for _, t := range ca.trees {
+		t.Close()
+	}
+
 	ca.closed = true
 	return ca.flock.Unlock()
 }
@@ -205,7 +224,10 @@ func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
 // Call Handle.Close() when done.
 func Open(path string) (*Handle, error) {
 	h := Handle{
-		path: path,
+		path:    path,
+		indices: make(map[uint32]*Index),
+		aas:     make(map[uint32]*os.File),
+		trees:   make(map[uint32]*Tree),
 	}
 	if err := h.lock(); err != nil {
 		return nil, err
@@ -246,6 +268,18 @@ func (h Handle) paramsPath() string {
 
 func (h Handle) queuePath() string {
 	return gopath.Join(h.path, "queue")
+}
+
+func (h Handle) treePath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "tree")
+}
+
+func (h Handle) indexPath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "index")
+}
+
+func (h Handle) aaPath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "abridged-assertions")
 }
 
 func (h Handle) batchPath(number uint32) string {
@@ -302,6 +336,10 @@ func (h *Handle) lock() error {
 
 // Returns a sorted list of batches for which a directory was created.
 func (h *Handle) listBatchNumbers() ([]uint32, error) {
+	if h.batchNumbersCache != nil {
+		return h.batchNumbersCache, nil
+	}
+
 	ds, err := os.ReadDir(h.batchesPath())
 	if err != nil {
 		return nil, err
@@ -321,6 +359,9 @@ func (h *Handle) listBatchNumbers() ([]uint32, error) {
 	sort.Slice(ret, func(i, j int) bool {
 		return ret[i] < ret[j]
 	})
+
+	h.batchNumbersCache = ret
+
 	return ret, nil
 }
 
@@ -411,9 +452,15 @@ func (h *Handle) dropOldBatches(dt time.Time) error {
 		return fmt.Errorf("would delete all existing batches")
 	}
 
+	h.batchNumbersCache = nil // Invalidate cache of existing batches
+
 	for batch := existingBatches.Begin; batch < existingBatches.End; batch++ {
 		if !expectedStored.AreAllPast(batch) {
 			break
+		}
+
+		if err := h.closeBatch(batch); err != nil {
+			return err
 		}
 
 		slog.Info("Removing batch", "batch", batch)
@@ -422,6 +469,162 @@ func (h *Handle) dropOldBatches(dt time.Time) error {
 		}
 	}
 	return nil
+}
+
+// Close any (cached) open files for the given batch.
+func (h *Handle) closeBatch(batch uint32) error {
+	if idx, ok := h.indices[batch]; ok {
+		err := idx.Close()
+		if err != nil {
+			return fmt.Errorf("closing index for %d: %w", batch, err)
+		}
+		delete(h.indices, batch)
+	}
+
+	if r, ok := h.aas[batch]; ok {
+		err := r.Close()
+		if err != nil {
+			return fmt.Errorf("closing abridged-assertions for %d: %w", batch, err)
+		}
+		delete(h.aas, batch)
+	}
+
+	if r, ok := h.trees[batch]; ok {
+		err := r.Close()
+		if err != nil {
+			return fmt.Errorf("closing tree for  %d: %w", batch, err)
+		}
+		delete(h.trees, batch)
+	}
+	return nil
+}
+
+// Returns the AbridgedAssertions index for the given batch.
+func (ca *Handle) indexFor(batch uint32) (*Index, error) {
+	if idx, ok := ca.indices[batch]; ok {
+		return idx, nil
+	}
+
+	idx, err := OpenIndex(ca.indexPath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	ca.indices[batch] = idx
+
+	return idx, nil
+}
+
+// Return the Tree handle for the given batch.
+func (ca *Handle) treeFor(batch uint32) (*Tree, error) {
+	if t, ok := ca.trees[batch]; ok {
+		return t, nil
+	}
+
+	t, err := OpenTree(ca.treePath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	ca.trees[batch] = t
+
+	return t, nil
+}
+
+// Returns file handle to abridged-assertions file for the given batch.
+func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
+	if r, ok := ca.aas[batch]; ok {
+		return r, nil
+	}
+
+	r, err := os.Open(ca.aaPath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+type keySearchResult struct {
+	Batch          uint32
+	SequenceNumber uint64
+	Offset         uint64
+}
+
+// Returns the certificate for an issued assertion
+func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
+	aa := a.Abridge()
+	var key [mtc.HashLen]byte
+	err := aa.Key(key[:])
+	if err != nil {
+		return nil, err
+	}
+	res, err := ca.aaByKey(key[:])
+	if err != nil {
+		return nil, fmt.Errorf("searching by key: %w", err)
+	}
+
+	if res == nil {
+		return nil, fmt.Errorf("no assertion with key %x on record", key)
+	}
+
+	tree, err := ca.treeFor(res.Batch)
+	if err != nil {
+		return nil, err
+	}
+
+	path, err := tree.AuthenticationPath(res.SequenceNumber)
+	if err != nil {
+		return nil, fmt.Errorf("creating authentication path: %w", err)
+	}
+
+	p := ca.Params()
+	return &mtc.BikeshedCertificate{
+		Assertion: a,
+		Proof: mtc.NewMerkleTreeProof(
+			&mtc.Batch{CA: &p, Number: res.Batch},
+			res.SequenceNumber,
+			path,
+		),
+	}, nil
+}
+
+// Search for AbridgedAssertions's batch/seqno/offset by key.
+func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
+	batches, err := ca.listBatchRange()
+	if err != nil {
+		return nil, fmt.Errorf("listing batches: %w", err)
+	}
+
+	if batches.Len() == 0 {
+		return nil, nil
+	}
+
+	for batch := batches.End - 1; batch <= batches.End; batch-- {
+		res, err := ca.aaByKeyIn(batch, key)
+		if err != nil {
+			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
+		}
+		if res != nil {
+			return &keySearchResult{
+				Batch:          batch,
+				SequenceNumber: res.SequenceNumber,
+				Offset:         res.Offset,
+			}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+// Find AbridgedAssertion's seqno/offset by key in the given batch.
+func (ca *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error) {
+	idx, err := ca.indexFor(batch)
+	if err != nil {
+		return nil, err
+	}
+
+	return idx.Search(key)
 }
 
 // Issue queued assertions into new batch.
@@ -554,8 +757,11 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 			"tree",
 			"signed-validity-window",
 			"abridged-assertions",
+			"index",
 		},
 	)
+
+	h.batchNumbersCache = nil // Invalidate cache of existing batches
 
 	// We're all set: move temporary directory into place
 	err = os.Rename(dir1, h.batchPath(number))
@@ -693,6 +899,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 			if err != nil {
 				return fmt.Errorf(
 					"Writing assertion %x to %s: %w",
+					qa.Checksum,
 					aasPath,
 					err,
 				)
@@ -741,6 +948,25 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	err = treeW.Close()
 	if err != nil {
 		return fmt.Errorf("closing %s: %w", treePath, err)
+	}
+
+	// Compute index
+	_, err = aasR.Seek(0, 0)
+	if err != nil {
+		return fmt.Errorf("seeking %s to start: %w", aasPath, err)
+	}
+
+	indexPath := gopath.Join(dir, "index")
+	indexW, err := os.Create(indexPath)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", indexPath, err)
+	}
+
+	defer indexW.Close()
+
+	err = ComputeIndex(aasR, indexW)
+	if err != nil {
+		return fmt.Errorf("computing %s to start: %w", indexPath, err)
 	}
 
 	// Sign validity window

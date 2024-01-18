@@ -31,10 +31,11 @@ type unmarshaler interface {
 	maxSize() int
 }
 
-// Unmarshals a stream of T from r, and call f on each of them.
+// Unmarshals a stream of T from r, and call f on each of them as second
+// argument, with the offset in the stream as the first argument.
 //
 // If f returns an error, break.
-func unmarshal[T unmarshaler](r io.Reader, f func(T) error) error {
+func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
 	// Create a new instance of T
 	var msg T
 	reflect.ValueOf(&msg).Elem().Set(reflect.New(reflect.TypeOf(msg).Elem()))
@@ -42,6 +43,7 @@ func unmarshal[T unmarshaler](r io.Reader, f func(T) error) error {
 	buf := make([]byte, 512)
 	s := cryptobyte.String(buf[:0])
 	maxSize := msg.maxSize()
+	offset := 0
 
 	for {
 		oldS := s
@@ -49,9 +51,10 @@ func unmarshal[T unmarshaler](r io.Reader, f func(T) error) error {
 
 		// Success? Call f and continue
 		if err == nil {
-			if err := f(msg); err != nil {
+			if err := f(offset, msg); err != nil {
 				return err
 			}
+			offset += len(oldS) - len(s)
 			continue
 		}
 

@@ -191,6 +191,14 @@ func (t *MerkleTreeTrustAnchor) Info() []byte {
 	return ret
 }
 
+func (t *MerkleTreeTrustAnchor) BatchNumber() uint32 {
+	return t.batchNumber
+}
+
+func (t *MerkleTreeTrustAnchor) IssuerId() string {
+	return t.issuerId
+}
+
 func (t *UnknownTrustAnchor) ProofType() ProofType {
 	return t.typ
 }
@@ -215,6 +223,14 @@ func (p *MerkleTreeProof) Info() []byte {
 		panic(err)
 	}
 	return ret
+}
+
+func (p *MerkleTreeProof) Path() []byte {
+	return p.path
+}
+
+func (p *MerkleTreeProof) Index() uint64 {
+	return p.index
 }
 
 func (p *UnknownProof) TrustAnchor() TrustAnchor {
@@ -306,11 +322,17 @@ func (t *Tree) WriteTo(w io.Writer) error {
 }
 
 func (t *Tree) NodeCount() uint {
-	if t.nLeaves == 0 {
+	return TreeNodeCount(t.nLeaves)
+}
+
+// Returns the number of nodes in the Merkle tree for a batch, which has
+// nLeaves assertions.
+func TreeNodeCount(nLeaves uint64) uint {
+	if nLeaves == 0 {
 		return 1
 	}
 
-	nodesInLayer := uint(t.nLeaves)
+	nodesInLayer := uint(nLeaves)
 	ret := uint(0)
 	for nodesInLayer != 1 {
 		if nodesInLayer&1 == 1 {
@@ -330,7 +352,7 @@ func (t *Tree) UnmarshalBinary(buf []byte) error {
 		return ErrTruncated
 	}
 
-	nNodes := t.NodeCount()
+	nNodes := TreeNodeCount(t.nLeaves)
 
 	if !s.ReadBytes(&t.buf, int(nNodes)*HashLen) {
 		return ErrTruncated
@@ -632,6 +654,13 @@ func (p *CAParams) newTreeHeads(prevHeads, root []byte) ([]byte, error) {
 	return append(prevHeads[HashLen:len(prevHeads)], root...), nil
 }
 
+func (batch *Batch) Anchor() *MerkleTreeTrustAnchor {
+	return &MerkleTreeTrustAnchor{
+		issuerId:    batch.CA.IssuerId,
+		batchNumber: batch.Number,
+	}
+}
+
 func (batch *Batch) SignValidityWindow(signer Signer, prevHeads []byte,
 	root []byte) (SignedValidityWindow, error) {
 	newHeads, err := batch.CA.newTreeHeads(prevHeads, root)
@@ -702,6 +731,15 @@ func (s *TLSSubject) Verifier() (Verifier, error) {
 
 	s.pk = pk
 	return pk, nil
+}
+
+func (p ProofType) String() string {
+	switch p {
+	case MerkleTreeProofType:
+		return "merkle_tree_sha256"
+	default:
+		return fmt.Sprintf("ProofType(%d)", p)
+	}
 }
 
 func (s SubjectType) String() string {
@@ -935,7 +973,7 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	var index uint64
 	hash := make([]byte, HashLen)
 
-	err := unmarshal(r, func(aa *AbridgedAssertion) error {
+	err := unmarshal(r, func(_ int, aa *AbridgedAssertion) error {
 		err := aa.Hash(hash, batch, index)
 		if err != nil {
 			return err
@@ -952,11 +990,13 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
-// Unmarshals AbridgedAssertions from r and calls f for each.
+// Unmarshals AbridgedAssertions from r and calls f for each, with
+// the offset in the stream as first argument, and the abridged
+// assertion as second argument.
 //
 // Returns early one rror.
 func UnmarshalAbridgedAssertions(r io.Reader,
-	f func(*AbridgedAssertion) error) error {
+	f func(int, *AbridgedAssertion) error) error {
 	return unmarshal(r, f)
 }
 
@@ -1102,7 +1142,20 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	return &Tree{buf: buf.Bytes(), nLeaves: nLeaves}, nil
 }
 
-// Computes the leaf hash of the assertion.
+// Computes the key of the AbridgedAssertion used in the index.
+func (a *AbridgedAssertion) Key(out []byte) error {
+	buf, err := a.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	_, _ = h.Write(buf)
+	h.Sum(out[:0])
+	return nil
+}
+
+// Computes the leaf hash of the AbridgedAssertion in the Merkle tree
+// computed for the batch.
 func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
 	var b cryptobyte.Builder
 	b.AddUint8(2)
@@ -1434,4 +1487,12 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 	}
 
 	return b.Bytes()
+}
+
+func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProof {
+	return &MerkleTreeProof{
+		anchor: batch.Anchor(),
+		index:  index,
+		path:   path,
+	}
 }
