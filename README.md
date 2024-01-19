@@ -7,11 +7,11 @@ Implementation of [Merkle Tree Certificates for TLS](
     https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html)
 
 At the moment only the Certification Authority (CA) side is implemented,
-and we differ from `-00` and `master` branch, by including
+and we differ from `-01` and `master` branch, by including
 some [unmerged PRs](https://github.com/davidben/merkle-tree-certs/pulls).
 
-High-level overview
--------------------
+Demo
+----
 
 For a proper introduction and motivation, check out the [draft specification](
     https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html)
@@ -20,6 +20,7 @@ and [David's TLS working group presentation at IETF116](
 
 Merkle Tree Certificates is an **optimisation** to the WebPKI (including
 [Certificate Transparency](https://certificate.transparency.dev))
+motivated by the large sizes of typical post-quantum signatures and public keys,
 to reduce the number of keys and signatures
 required for the common case where
 
