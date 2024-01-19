@@ -49,12 +49,21 @@ func OpenIndex(path string) (*Index, error) {
 		return nil, fmt.Errorf("mmap(%s): %w", path, err)
 	}
 
+	if r.Len() == 0 {
+		r.Close()
+		r = nil
+	}
+
 	return &Index{
 		r: r,
 	}, nil
 }
 
 func (h *Index) Close() error {
+	if h.r == nil {
+		return nil
+	}
+
 	return h.r.Close()
 }
 
@@ -65,6 +74,10 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 
 	if len(hash) != hl {
 		panic(fmt.Sprintf("hash must be %d bytes", hl))
+	}
+
+	if h.r == nil {
+		return nil, nil
 	}
 
 	// Interpolation search.
