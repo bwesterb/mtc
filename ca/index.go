@@ -118,7 +118,7 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 				val [16]byte
 				ret IndexSearchResult
 			)
-			_, err := h.r.ReadAt(val[:], int64(hl*intGuess+hl))
+			_, err := h.r.ReadAt(val[:], int64(el*intGuess+hl))
 			if err != nil {
 				return nil, err
 			}

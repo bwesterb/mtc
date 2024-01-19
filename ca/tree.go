@@ -2,7 +2,6 @@ package ca
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 
 	"github.com/bwesterb/mtc"
@@ -56,7 +55,7 @@ func (h *Tree) Close() error {
 // is included in the Merkle tree.
 func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
 	if index >= t.nLeaves {
-		return nil, errors.New("Tree index out of range")
+		return nil, fmt.Errorf("Tree index out of range %d", index)
 	}
 
 	var buf [mtc.HashLen]byte
