@@ -1000,21 +1000,21 @@ func UnmarshalAbridgedAssertions(r io.Reader,
 	return unmarshal(r, f)
 }
 
-// Check validity of authentication path.
+// Compute batch root from authentication path.
 //
-// Return nil on valid authentication path.
-func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
-	aa *AbridgedAssertion) error {
+// To verify a certificate/proof, use VerifyAuthenticationPath instead.
+func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
+	path []byte, aa *AbridgedAssertion) ([]byte, error) {
 	h := make([]byte, HashLen)
 	if err := aa.Hash(h[:], batch, index); err != nil {
-		return err
+		return nil, err
 	}
 
 	level := uint8(0)
 	var left, right []byte
 	for len(path) != 0 {
 		if len(path) < HashLen {
-			return ErrTruncated
+			return nil, ErrTruncated
 		}
 
 		left, right, path = h, path[:HashLen], path[HashLen:]
@@ -1029,7 +1029,21 @@ func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
 	}
 
 	if index != 0 {
-		return fmt.Errorf("Authentication path too short")
+		return nil, fmt.Errorf("Authentication path too short")
+	}
+
+	return h, nil
+}
+
+// Check validity of authentication path.
+//
+// Return nil on valid authentication path.
+func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
+	aa *AbridgedAssertion) error {
+
+	h, err := batch.ComputeRootFromAuthenticationPath(index, path, aa)
+	if err != nil {
+		return err
 	}
 
 	if !bytes.Equal(root, h) {

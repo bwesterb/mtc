@@ -22,8 +22,9 @@ import (
 )
 
 var (
-	errArgs     = errors.New("Wrong number of arguments")
-	fCpuProfile *os.File
+	errNoCaParams = errors.New("missing ca-params flag")
+	errArgs       = errors.New("Wrong number of arguments")
+	fCpuProfile   *os.File
 )
 
 // Writes buf either to stdout (if path is empty) or path.
@@ -451,7 +452,7 @@ func inspectGetCAParams(cc *cli.Context) (*mtc.CAParams, error) {
 	var p mtc.CAParams
 	path := cc.String("ca-params")
 	if path == "" {
-		return nil, errors.New("missing ca-params flag")
+		return nil, errNoCaParams
 	}
 	buf, err := os.ReadFile(path)
 	if err != nil {
@@ -597,17 +598,49 @@ func handleInspectCert(cc *cli.Context) error {
 		fmt.Fprintf(w, "index\t%d\n", proof.Index())
 	}
 
-	w.Flush()
-
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
 		path := proof.Path()
 
+		params, err := inspectGetCAParams(cc)
+		if err == nil {
+			anch := proof.TrustAnchor().(*mtc.MerkleTreeTrustAnchor)
+
+			batch := &mtc.Batch{
+				CA:     params,
+				Number: anch.BatchNumber(),
+			}
+
+			if anch.IssuerId() != params.IssuerId {
+				return fmt.Errorf(
+					"IssuerId doesn't match: %s ≠ %s",
+					params.IssuerId,
+					anch.IssuerId(),
+				)
+			}
+			aa := c.Assertion.Abridge()
+			root, err := batch.ComputeRootFromAuthenticationPath(
+				proof.Index(),
+				path,
+				&aa,
+			)
+			if err != nil {
+				return fmt.Errorf("computing root: %w", err)
+			}
+
+			fmt.Fprintf(w, "recomputed root\t%x\n", root)
+		} else if err != errNoCaParams {
+			return err
+		}
+
+		w.Flush()
 		fmt.Printf("authentication path\n")
 		for i := 0; i < len(path)/mtc.HashLen; i++ {
 			fmt.Printf(" %x\n", path[i*mtc.HashLen:(i+1)*mtc.HashLen])
 		}
 	}
+
+	w.Flush()
 	return nil
 }
 
