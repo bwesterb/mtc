@@ -693,7 +693,10 @@ func (h *Handle) issue(dt time.Time) error {
 	}
 
 	if toCreate.Len() == 0 {
-		slog.Info("No batches were ready to issue")
+		slog.Info(fmt.Sprintf(
+			"No batches were ready to issue. Next batch ready in %s.",
+			h.params.NextBatchAt(dt).Sub(dt).Truncate(time.Second),
+		))
 		return nil
 	}
 

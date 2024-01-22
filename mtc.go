@@ -451,6 +451,20 @@ func (p *CAParams) StoredBatches(dt time.Time) BatchRange {
 	}
 }
 
+// Returns the the time when the next batch starts.
+func (p *CAParams) NextBatchAt(dt time.Time) time.Time {
+	ts := dt.Unix()
+	currentNumber := (ts - int64(p.StartTime)) / int64(p.BatchDuration)
+	if currentNumber < 0 {
+		return time.Unix(int64(p.StartTime), 0)
+	}
+
+	return time.Unix(
+		int64(p.StartTime+p.BatchDuration*uint64(currentNumber+1)),
+		0,
+	)
+}
+
 // Batches that are non-expired, and either issued or ready, at the given time.
 func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 	ts := dt.Unix()
