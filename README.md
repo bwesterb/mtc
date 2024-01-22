@@ -61,8 +61,8 @@ To create an assertion, you can use the `mtc new-assertion` command.
 First, let's quickly create a P-256 public key to play with.
 
 ```
-$ openssl ecparam -name prime256v1 -genkey -noout -out p256.priv
-$ openssl ec -noout -in p256.priv -pubout -out p256.pub
+$ openssl ecparam -name prime256v1 -genkey -out p256.priv
+$ openssl ec -in p256.priv -pubout -out p256.pub
 ```
 
 Now we create an assertion that this P-256 public key should
@@ -290,7 +290,10 @@ total number of entries: 2
 
 ### Issuing more batches
 
-Let's queue some more assertions, and issue.
+As we just issued a new batch, we need to wait a while before the
+next batch is ready to issue.
+
+Let's queue some more assertions, wait a bit, and issue a new batch.
 
 ```
 $ mtc ca queue --tls-pem p256.pub -d 1.example.com
@@ -327,6 +330,9 @@ $ find .
 ./queue
 ./tmp
 ```
+
+As we waited a bit longer, the current batch is `2`, which will contain
+the queued assertions. The batch `1` in between will be empty.
 
 Now `latest` points to `2`, and its signed validity window is more interesting.
 
