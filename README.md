@@ -42,7 +42,7 @@ for improvement.
 To play around with MTC, you can install the `mtc` commandline tool:
 
 ```
-$ go install github.com/bwesterb/mtc/cmd/mtc@v0.1.0
+$ go install github.com/bwesterb/mtc/cmd/mtc@v0.1.1
 ```
 
 ### Assertions
