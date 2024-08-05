@@ -1573,9 +1573,6 @@ func (tai TrustAnchorIdentifier) String() string {
 func (tai *TrustAnchorIdentifier) UnmarshalText(text []byte) error {
 	bits := strings.Split(string(text), ".")
 	var buf bytes.Buffer
-	if len(bits) > 122 {
-		return errors.New("TrustAnchorIdentifier: too long")
-	}
 	for i, bit := range bits {
 		v, err := strconv.ParseUint(bit, 10, 32)
 		if err != nil {
@@ -1619,10 +1616,6 @@ func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
 	child := 0
 
 	for i := 0; i < len(*tai); i++ {
-		if child >= 122 {
-			return errors.New("TrustAnchorIdentifier: too long")
-		}
-
 		if cur == 0 && (*tai)[i] == 0x80 {
 			return errors.New("TrustAnchorIdentifier: not normalized; starts with 0x80")
 		}

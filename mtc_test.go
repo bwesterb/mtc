@@ -371,7 +371,6 @@ func TestTAIParsing(t *testing.T) {
 		{"12345678900", "TrustAnchorIdentifier: subidentifier 0: strconv.ParseUint: parsing \"12345678900\": value out of range"},
 		{"1..1", "TrustAnchorIdentifier: subidentifier 1: strconv.ParseUint: parsing \"\": invalid syntax"},
 		{"-1", "TrustAnchorIdentifier: subidentifier 0: strconv.ParseUint: parsing \"-1\": invalid syntax"},
-		{"1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1", "TrustAnchorIdentifier: too long"},
 	} {
 		var tai TrustAnchorIdentifier
 		if err := tai.UnmarshalText([]byte(tc.s)); err == nil || err.Error() != tc.errString {
