@@ -355,7 +355,8 @@ func (t *Tree) UnmarshalBinary(buf []byte) error {
 
 	nNodes := TreeNodeCount(t.nLeaves)
 
-	if !s.ReadBytes(&t.buf, int(nNodes)*HashLen) {
+	t.buf = make([]byte, int(nNodes)*HashLen)
+	if !s.CopyBytes(t.buf) {
 		return ErrTruncated
 	}
 	if !s.Empty() {
@@ -415,7 +416,7 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
 			return ErrExtraBytes
 		}
 		if !proofInfo.ReadUint64(&proof.index) ||
-			!proofInfo.ReadUint16LengthPrefixed((*cryptobyte.String)(&proof.path)) {
+			!copyUint16LengthPrefixed(&proofInfo, &proof.path) {
 			return ErrTruncated
 		}
 		if !proofInfo.Empty() {
@@ -576,8 +577,8 @@ func (p *CAParams) PreEpochRoots() []byte {
 }
 
 func (w *ValidityWindow) unmarshal(s *cryptobyte.String, p *CAParams) error {
-	toRead := int(HashLen * p.ValidityWindowSize)
-	if !s.ReadUint32(&w.BatchNumber) || !s.ReadBytes(&w.TreeHeads, toRead) {
+	w.TreeHeads = make([]byte, int(HashLen*p.ValidityWindowSize))
+	if !s.ReadUint32(&w.BatchNumber) || !s.CopyBytes(w.TreeHeads) {
 		return ErrTruncated
 	}
 
@@ -604,7 +605,7 @@ func (w *SignedValidityWindow) UnmarshalBinaryWithoutVerification(
 	if err != nil {
 		return err
 	}
-	if !s.ReadUint16LengthPrefixed((*cryptobyte.String)(&w.Signature)) {
+	if !copyUint16LengthPrefixed(&s, &w.Signature) {
 		return ErrTruncated
 	}
 	if !s.Empty() {
@@ -841,11 +842,11 @@ func (a *Assertion) UnmarshalBinary(data []byte) error {
 func (a *Assertion) unmarshal(s *cryptobyte.String) error {
 	var (
 		subjectType SubjectType
-		subjectInfo cryptobyte.String
+		subjectInfo []byte
 		claims      cryptobyte.String
 	)
 	if !s.ReadUint16((*uint16)(&subjectType)) ||
-		!s.ReadUint16LengthPrefixed(&subjectInfo) ||
+		!copyUint16LengthPrefixed(s, &subjectInfo) ||
 		!s.ReadUint16LengthPrefixed(&claims) {
 		return ErrTruncated
 	}
@@ -857,12 +858,12 @@ func (a *Assertion) unmarshal(s *cryptobyte.String) error {
 	switch subjectType {
 	case TLSSubjectType:
 		a.Subject = &TLSSubject{
-			packed: []byte(subjectInfo),
+			packed: subjectInfo,
 		}
 	default:
 		a.Subject = &UnknownSubject{
 			typ:  subjectType,
-			info: []byte(subjectInfo),
+			info: subjectInfo,
 		}
 	}
 
@@ -919,23 +920,21 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 
 	switch subjectType {
 	case TLSSubjectType:
-		var (
-			pkHash  []byte
-			subject AbridgedTLSSubject
-		)
+		var subject AbridgedTLSSubject
 		if !subjectInfo.ReadUint16((*uint16)(&subject.SignatureScheme)) ||
-			!subjectInfo.ReadBytes(&pkHash, HashLen) {
+			!subjectInfo.CopyBytes(subject.PublicKeyHash[:]) {
 			return ErrTruncated
 		}
 		if !subjectInfo.Empty() {
 			return ErrExtraBytes
 		}
-		copy(subject.PublicKeyHash[:], pkHash)
 		a.Subject = &subject
 	default:
+		subjectInfoBuf := make([]byte, len(subjectInfo))
+		copy(subjectInfoBuf, subjectInfo)
 		a.Subject = &UnknownSubject{
 			typ:  subjectType,
-			info: []byte(subjectInfo),
+			info: subjectInfoBuf,
 		}
 	}
 
@@ -1386,8 +1385,8 @@ func (c *Claims) UnmarshalBinary(data []byte) error {
 			first := true
 			var previousIp net.IP
 			for !packed.Empty() {
-				var ip net.IP
-				if !packed.ReadBytes((*[]byte)(&ip), entrySize) {
+				var ip net.IP = net.IP(make([]byte, entrySize))
+				if !packed.CopyBytes([]byte(ip)) {
 					return ErrTruncated
 				}
 				if first {
@@ -1409,12 +1408,14 @@ func (c *Claims) UnmarshalBinary(data []byte) error {
 			}
 
 		default:
+			clm := UnknownClaim{
+				Type: claimType,
+				Info: make([]byte, len(claimInfo)),
+			}
+			copy(clm.Info, claimInfo)
 			c.Unknown = append(
 				c.Unknown,
-				UnknownClaim{
-					Type: claimType,
-					Info: []byte(claimInfo),
-				},
+				clm,
 			)
 		}
 	}
@@ -1610,7 +1611,7 @@ func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
 }
 
 func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
-	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(tai)) || len(*tai) == 0 {
+	if !copyUint8LengthPrefixed(s, (*[]byte)(tai)) || len(*tai) == 0 {
 		return ErrTruncated
 	}
 

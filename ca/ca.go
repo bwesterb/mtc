@@ -63,17 +63,17 @@ type QueuedAssertion struct {
 func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
 	var (
 		s        cryptobyte.String = cryptobyte.String(data)
-		checksum []byte
+		checksum [csLen]byte
 	)
-	if !s.ReadBytes(&checksum, csLen) {
+	if !s.CopyBytes(checksum[:]) {
 		return mtc.ErrTruncated
 	}
 
 	a.Checksum = make([]byte, csLen)
-	copy(a.Checksum, checksum)
+	copy(a.Checksum, checksum[:])
 
 	checksum2 := sha256.Sum256([]byte(s))
-	if !bytes.Equal(checksum2[:], checksum) {
+	if !bytes.Equal(checksum2[:], checksum[:]) {
 		return ErrChecksumInvalid
 	}
 

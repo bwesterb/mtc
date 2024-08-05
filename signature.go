@@ -176,7 +176,9 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 		if len(data) != ed25519.PublicKeySize {
 			return nil, errors.New("Wrong length for ed25519 public key")
 		}
-		return ed25519Verifier(data), nil
+		ret := make([]byte, ed25519.PublicKeySize)
+		copy(ret, data)
+		return ed25519Verifier(ret), nil
 	case TLSECDSAWithP521AndSHA512, TLSECDSAWithP384AndSHA384, TLSECDSAWithP256AndSHA256:
 		curve := signatureSchemeToCurve(scheme)
 		x, y := elliptic.Unmarshal(curve, data)

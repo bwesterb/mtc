@@ -88,3 +88,23 @@ func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
 	}
 	return nil
 }
+
+func copyUint8LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
+	var ss cryptobyte.String
+	if !s.ReadUint8LengthPrefixed(&ss) {
+		return false
+	}
+	*out = make([]byte, len(ss))
+	copy(*out, ss)
+	return true
+}
+
+func copyUint16LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
+	var ss cryptobyte.String
+	if !s.ReadUint16LengthPrefixed(&ss) {
+		return false
+	}
+	*out = make([]byte, len(ss))
+	copy(*out, ss)
+	return true
+}
