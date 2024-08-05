@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1523,4 +1524,120 @@ func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProo
 		index:  index,
 		path:   path,
 	}
+}
+
+// A Trust Anchor Identifier (TAI) is used to identify a CA, or a specific batch.
+//
+// TAI are OIDs relative to the Private Enterprise Numbers (PEN)
+// arc  1.3.6.1.4.1.
+type TrustAnchorIdentifier []byte
+
+func (tai *TrustAnchorIdentifier) UnmarshalBinary(buf []byte) error {
+	s := cryptobyte.String(buf)
+	err := tai.unmarshal(&s)
+	if err != nil {
+		return err
+	}
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+	return nil
+}
+
+func (tai TrustAnchorIdentifier) String() string {
+	if tai == nil {
+		return "nil"
+	}
+
+	var buf bytes.Buffer
+
+	child := 0
+	cur := uint64(0)
+	for i := 0; i < len(tai); i++ {
+		cur = (cur << 7) | uint64(tai[i]&0x7f)
+
+		if tai[i]&0x80 == 0 {
+			if child != 0 {
+				fmt.Fprintf(&buf, ".")
+			}
+			fmt.Fprintf(&buf, "%d", cur)
+			cur = 0
+			child++
+		}
+	}
+
+	return buf.String()
+}
+
+func (tai *TrustAnchorIdentifier) UnmarshalText(text []byte) error {
+	bits := strings.Split(string(text), ".")
+	var buf bytes.Buffer
+	if len(bits) > 122 {
+		return errors.New("TrustAnchorIdentifier: too long")
+	}
+	for i, bit := range bits {
+		v, err := strconv.ParseUint(bit, 10, 32)
+		if err != nil {
+			return fmt.Errorf("TrustAnchorIdentifier: subidentifier %d: %v", i, err)
+		}
+		for j := 4; j >= 0; j-- {
+			cur := v >> (j * 7)
+			if cur != 0 || j == 0 {
+				toWrite := byte(cur & 0x7f)
+				if j != 0 {
+					toWrite |= 0x80
+				}
+				buf.WriteByte(toWrite)
+			}
+		}
+	}
+	*tai = buf.Bytes()
+	if len(*tai) > 255 {
+		return errors.New("TrustAnchorIdentifier: over 255 bytes")
+	}
+	return nil
+}
+
+func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
+	if tai == nil || len(tai) == 0 {
+		return nil, errors.New("Can't marshal uninitialized TrustAnchorIdentifier")
+	}
+	var b cryptobyte.Builder
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes([]byte(tai))
+	})
+	return b.Bytes()
+}
+
+func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
+	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(tai)) || len(*tai) == 0 {
+		return ErrTruncated
+	}
+
+	cur := uint64(0)
+	child := 0
+
+	for i := 0; i < len(*tai); i++ {
+		if child >= 122 {
+			return errors.New("TrustAnchorIdentifier: too long")
+		}
+
+		if cur == 0 && (*tai)[i] == 0x80 {
+			return errors.New("TrustAnchorIdentifier: not normalized; starts with 0x80")
+		}
+		cur = (cur << 7) | uint64((*tai)[i]&0x7f)
+
+		if cur > 0xffffffff {
+			return fmt.Errorf("TrustAnchorIdentifier: overflow of sub-identifier %d", child)
+		}
+
+		if (*tai)[i]&0x80 == 0 {
+			cur = 0
+			child++
+		} else if i == len(*tai)-1 {
+			return errors.New("TrustAnchorIdentifier: ends on continuation")
+		}
+	}
+
+	return nil
 }

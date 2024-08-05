@@ -314,3 +314,68 @@ func TestClaimsParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestTAIParsing(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		hex  string
+	}{
+		{"0", "0100"},
+		{"32473", "0381fd59"},
+		{"32473.1", "0481fd5901"},
+		{"32473.4.40.400.4000.40000.400000.4000000.40000000.400000000.4000000000",
+			"2181fd59042883109f2082b84098b50081f492009389b40081bede88008ef3acd000"},
+		{"32473.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1",
+			"7c81fd5901010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"},
+	} {
+		var tai, tai2 TrustAnchorIdentifier
+		if err := tai.UnmarshalText([]byte(tc.text)); err != nil {
+			t.Fatal(err)
+		}
+		if tai.String() != tc.text {
+			t.Fatalf("%s ≠ %s", tc.text, tai.String())
+		}
+		bin2, err := tai.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		hex2 := hex.EncodeToString(bin2)
+
+		if hex2 != tc.hex {
+			t.Fatalf("%s ≠ %s", tc.hex, hex2)
+		}
+		if err := tai2.UnmarshalBinary(bin2); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(tai, tai2) {
+			t.Fatalf("%v ≠ %v", tai, tai2)
+		}
+	}
+
+	for _, tc := range []struct{ hex, errString string }{
+		{"00", "Input truncated"},
+		{"01", "Input truncated"},
+		{"028001", "TrustAnchorIdentifier: not normalized; starts with 0x80"},
+		{"010001", "Unexpected extra (internal) bytes"},
+		{"05ff81818101", "TrustAnchorIdentifier: overflow of sub-identifier 0"},
+		{"0181", "TrustAnchorIdentifier: ends on continuation"},
+	} {
+		var tai TrustAnchorIdentifier
+		bin, _ := hex.DecodeString(tc.hex)
+		if err := tai.UnmarshalBinary(bin); err == nil || err.Error() != tc.errString {
+			t.Fatalf("%s: %s ≠ %v", tc.hex, tc.errString, err)
+		}
+	}
+
+	for _, tc := range []struct{ s, errString string }{
+		{"12345678900", "TrustAnchorIdentifier: subidentifier 0: strconv.ParseUint: parsing \"12345678900\": value out of range"},
+		{"1..1", "TrustAnchorIdentifier: subidentifier 1: strconv.ParseUint: parsing \"\": invalid syntax"},
+		{"-1", "TrustAnchorIdentifier: subidentifier 0: strconv.ParseUint: parsing \"-1\": invalid syntax"},
+		{"1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1", "TrustAnchorIdentifier: too long"},
+	} {
+		var tai TrustAnchorIdentifier
+		if err := tai.UnmarshalText([]byte(tc.s)); err == nil || err.Error() != tc.errString {
+			t.Fatalf("%s: %s ≠ %v", tc.s, tc.errString, err)
+		}
+	}
+}
