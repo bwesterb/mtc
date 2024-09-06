@@ -1338,7 +1338,7 @@ func (c *Claims) UnmarshalBinary(data []byte) error {
 
 			for !packed.Empty() {
 				var domain []byte
-				if !packed.ReadUint16LengthPrefixed((*cryptobyte.String)(&domain)) {
+				if !packed.ReadUint8LengthPrefixed((*cryptobyte.String)(&domain)) {
 					return ErrTruncated
 				}
 
@@ -1439,7 +1439,7 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { // claim_info
 			b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { // dns_names
 				for _, domain := range sorted {
-					b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+					b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
 						b.AddBytes([]byte(domain))
 					})
 				}
