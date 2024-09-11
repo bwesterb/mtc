@@ -76,8 +76,11 @@ func createTestAssertion(i int, sub Subject) Assertion {
 }
 
 func createTestCA() *CAParams {
+	tai := TrustAnchorIdentifier{}
+	_ = tai.FromSegments([]uint32{10, 20, 300})
 	ret := CAParams{
 		IssuerId:           "example",
+		IssuerOID:          tai,
 		PublicKey:          nil,
 		StartTime:          0,
 		BatchDuration:      1,

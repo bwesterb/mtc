@@ -107,7 +107,7 @@ For every batch, the CA signs that root together with all the roots
 Let's create an MTC CA.
 
 ```
-$ mtc ca new --batch-duration 5m --lifetime 1h my-mtc-ca ca.example.com/path
+$ mtc ca new --batch-duration 5m --lifetime 1h my-mtc-ca 123.12.15 ca.example.com/path
 ```
 
 This creates a new MTC CA called `my-mtc-ca`, and puts the data in the

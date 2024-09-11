@@ -30,6 +30,7 @@ var (
 
 type NewOpts struct {
 	IssuerId   string
+	IssuerOID  mtc.TrustAnchorIdentifier
 	HttpServer string
 
 	// Fields below are optional.
@@ -991,7 +992,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	return nil
 }
 
-// Creates a new Merkle Tree CA, and opens it.
+// New creates a new Merkle Tree CA, and opens it.
 //
 // Call Handle.Close() when done.
 func New(path string, opts NewOpts) (*Handle, error) {
@@ -1035,6 +1036,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 
 	h.params.HttpServer = opts.HttpServer
 	h.params.IssuerId = opts.IssuerId
+	h.params.IssuerOID = opts.IssuerOID
 
 	if opts.SignatureScheme == 0 {
 		opts.SignatureScheme = mtc.TLSDilitihium5r3
