@@ -191,7 +191,7 @@ func TestDraftExampleAssertion(t *testing.T) {
 	}
 	hexEqual(t, buf,
 		`00000024 08070020 c5d2080f a9a489a2 26b58166 dad00be8 120931a7 69c9c6f1
-        f8eefafc 38af9065 00130000 000f000d 000b6578 616d706c 652e636f 6d`,
+        f8eefafc 38af9065 00120000 000e000c 0b657861 6d706c65 2e636f6d`,
 	)
 	aa := a.Abridge()
 	buf, err = aa.MarshalBinary()
@@ -200,7 +200,7 @@ func TestDraftExampleAssertion(t *testing.T) {
 	}
 	hexEqual(t, buf,
 		`00000022 0807d8e2 c44fc82e 175e5698 b1c25324 6c9a996f c37bad29 fd59b6aa
-     838b0a93 0b000013 0000000f 000d000b 6578616d 706c652e 636f6d`,
+        838b0a93 0b000012 0000000e 000c0b65 78616d70 6c652e63 6f6d`,
 	)
 
 	pubRSA := &rsa.PublicKey{
@@ -238,9 +238,8 @@ func TestDraftExampleAssertion(t *testing.T) {
         7a28f1d0 7b710afb 2c796211 d9ba1feb 43d30810 63f19afd b7ba2ab0 e19fd008
         e719491d d10ed235 5d4790f0 3039e3a3 31aa2644 2d656716 ebe710f2 4260599a
         2d082db1 eccfaa8f f51cfb8e 3dfca0eb e1af59c2 f007b35e 02b0582f 50090018
-        b78a6b06 c0188ab3 514d60d6 6243e017 8b020301 00010029 0001000f 000d000b
-        6578616d 706c652e 636f6d00 02001200 10c00002 25c0000c 00c63364 3ccb0071
-        00`,
+        b78a6b06 c0188ab3 514d60d6 6243e017 8b020301 00010028 0001000e 000c0b65
+        78616d70 6c652e63 6f6d0002 00120010 c0000225 c0000c00 c633643c cb007100`,
 	)
 	aa = a.Abridge()
 	buf, err = aa.MarshalBinary()
@@ -249,8 +248,8 @@ func TestDraftExampleAssertion(t *testing.T) {
 	}
 	hexEqual(t, buf,
 		`00000022 08049a04 087a4d52 033a0a20 04333359 ccf29703 25684c5f a96f1ca1
-        35cb2ab1 f2670029 0001000f 000d000b 6578616d 706c652e 636f6d00 02001200
-        10c00002 25c0000c 00c63364 3ccb0071 00`,
+        35cb2ab1 f2670028 0001000e 000c0b65 78616d70 6c652e63 6f6d0002 00120010
+        c0000225 c0000c00 c633643c cb007100`,
 	)
 
 	// TODO ecdsa
