@@ -22,6 +22,7 @@ import (
 type CAParams struct {
 	Issuer             OID
 	PublicKey          Verifier
+	ProofType          ProofType
 	StartTime          uint64
 	BatchDuration      uint64
 	Lifetime           uint64
@@ -332,7 +333,7 @@ func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
 	return b.Bytes()
 }
 
-func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
+func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) error {
 	s := cryptobyte.String(data)
 	err := c.Assertion.unmarshal(&s)
 	if err != nil {
@@ -352,7 +353,7 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
 	if !s.Empty() {
 		return ErrExtraBytes
 	}
-	switch tai.ProofType() {
+	switch tai.ProofType(caStore) {
 	case MerkleTreeProofType:
 		proof := &MerkleTreeProof{}
 		if !proofInfo.ReadUint64(&proof.index) ||
@@ -425,11 +426,14 @@ func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
-	b.AddBytes(p.Issuer)
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(p.Issuer)
+	})
 	b.AddUint16(uint16(p.PublicKey.Scheme()))
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(p.PublicKey.Bytes())
 	})
+	b.AddUint16(uint16(p.ProofType))
 	b.AddUint64(p.StartTime)
 	b.AddUint64(p.BatchDuration)
 	b.AddUint64(p.Lifetime)
@@ -454,6 +458,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(&issuerBuf)) ||
 		!s.ReadUint16((*uint16)(&sigScheme)) ||
 		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&pkBuf)) ||
+		!s.ReadUint16((*uint16)(&p.ProofType)) ||
 		!s.ReadUint64(&p.StartTime) ||
 		!s.ReadUint64(&p.BatchDuration) ||
 		!s.ReadUint64(&p.Lifetime) ||
@@ -1466,6 +1471,25 @@ func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProo
 	}
 }
 
+type CAStore interface {
+	Lookup(oid OID) CAParams
+}
+
+type LocalCAStore struct {
+	store map[string]CAParams
+}
+
+func (s *LocalCAStore) Lookup(oid OID) CAParams {
+	return s.store[oid.String()]
+}
+
+func (s *LocalCAStore) Add(params CAParams) {
+	if s.store == nil {
+		s.store = make(map[string]CAParams)
+	}
+	s.store[params.Issuer.String()] = params
+}
+
 // A TrustAnchorIdentifier (TAI) is used to identify a CA, or a specific batch.
 //
 // TAI are OIDs relative to the Private Enterprise Numbers (PEN)
@@ -1477,9 +1501,8 @@ type TrustAnchorIdentifier struct {
 
 type OID []byte
 
-func (tai *TrustAnchorIdentifier) ProofType() ProofType {
-	// TODO make this dependent on the OID
-	return MerkleTreeProofType
+func (tai *TrustAnchorIdentifier) ProofType(store CAStore) ProofType {
+	return store.Lookup(tai.Issuer).ProofType
 }
 
 func (oid OID) segments() []uint32 {

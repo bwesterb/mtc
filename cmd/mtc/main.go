@@ -397,7 +397,7 @@ func handleCaShowQueue(cc *cli.Context) error {
 }
 
 func handleCaNew(cc *cli.Context) error {
-	if cc.Args().Len() != 3 {
+	if cc.Args().Len() != 2 {
 		cli.ShowSubcommandHelp(cc)
 		return errArgs
 	}
@@ -584,9 +584,16 @@ func handleInspectCert(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	params, err := inspectGetCAParams(cc)
+	if err != nil {
+		return err
+	}
+
+	caStore := mtc.LocalCAStore{}
+	caStore.Add(*params)
 
 	var c mtc.BikeshedCertificate
-	err = c.UnmarshalBinary(buf)
+	err = c.UnmarshalBinary(buf, &caStore)
 	if err != nil {
 		return err
 	}
@@ -595,7 +602,7 @@ func handleInspectCert(cc *cli.Context) error {
 	writeAssertion(w, c.Assertion)
 	fmt.Fprintf(w, "\n")
 	tai := c.Proof.TrustAnchorIdentifier()
-	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType())
+	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType(&caStore))
 
 	fmt.Fprintf(w, "CA OID\t%s\n", tai.Issuer)
 	fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
@@ -608,35 +615,29 @@ func handleInspectCert(cc *cli.Context) error {
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
 		path := proof.Path()
-
-		params, err := inspectGetCAParams(cc)
-		if err == nil {
-			batch := &mtc.Batch{
-				CA:     params,
-				Number: tai.BatchNumber,
-			}
-
-			if !reflect.DeepEqual(tai.Issuer, params.Issuer) {
-				return fmt.Errorf(
-					"IssuerId doesn't match: %s ≠ %s",
-					params.Issuer,
-					tai.Issuer,
-				)
-			}
-			aa := c.Assertion.Abridge()
-			root, err := batch.ComputeRootFromAuthenticationPath(
-				proof.Index(),
-				path,
-				&aa,
-			)
-			if err != nil {
-				return fmt.Errorf("computing root: %w", err)
-			}
-
-			fmt.Fprintf(w, "recomputed root\t%x\n", root)
-		} else if !errors.Is(err, errNoCaParams) {
-			return err
+		batch := &mtc.Batch{
+			CA:     params,
+			Number: tai.BatchNumber,
 		}
+
+		if !reflect.DeepEqual(tai.Issuer, params.Issuer) {
+			return fmt.Errorf(
+				"IssuerId doesn't match: %s ≠ %s",
+				params.Issuer,
+				tai.Issuer,
+			)
+		}
+		aa := c.Assertion.Abridge()
+		root, err := batch.ComputeRootFromAuthenticationPath(
+			proof.Index(),
+			path,
+			&aa,
+		)
+		if err != nil {
+			return fmt.Errorf("computing root: %w", err)
+		}
+
+		fmt.Fprintf(w, "recomputed root\t%x\n", root)
 
 		w.Flush()
 		fmt.Printf("authentication path\n")
