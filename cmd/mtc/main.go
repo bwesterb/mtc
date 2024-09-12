@@ -402,9 +402,9 @@ func handleCaNew(cc *cli.Context) error {
 		return errArgs
 	}
 
-	taiString := cc.Args().Get(1)
-	tai := mtc.TrustAnchorIdentifier{}
-	err := tai.UnmarshalText([]byte(taiString))
+	taiString := cc.Args().Get(0)
+	oid := mtc.OID{}
+	err := oid.UnmarshalText([]byte(taiString))
 	if err != nil {
 		return err
 	}
@@ -412,9 +412,8 @@ func handleCaNew(cc *cli.Context) error {
 	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
-			IssuerId:   cc.Args().Get(0),
-			IssuerOID:  tai,
-			HttpServer: cc.Args().Get(2),
+			Issuer:     oid,
+			HttpServer: cc.Args().Get(1),
 
 			BatchDuration:   cc.Duration("batch-duration"),
 			StorageDuration: cc.Duration("storage-duration"),
@@ -595,10 +594,11 @@ func handleInspectCert(cc *cli.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	writeAssertion(w, c.Assertion)
 	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "proof_type\t%v\n", c.Proof.TrustAnchorIdentifier().ProofType())
+	tai := c.Proof.TrustAnchorIdentifier()
+	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType())
 
-	fmt.Fprintf(w, "CA OID\t%s\n", c.Proof.TrustAnchorIdentifier().CAIdentifier())
-	fmt.Fprintf(w, "Batch number\t%d\n", c.Proof.TrustAnchorIdentifier().BatchNumber())
+	fmt.Fprintf(w, "CA OID\t%s\n", tai.Issuer)
+	fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
 
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
@@ -613,14 +613,14 @@ func handleInspectCert(cc *cli.Context) error {
 		if err == nil {
 			batch := &mtc.Batch{
 				CA:     params,
-				Number: proof.TrustAnchorIdentifier().BatchNumber(),
+				Number: tai.BatchNumber,
 			}
 
-			if !reflect.DeepEqual(proof.TrustAnchorIdentifier().CAIdentifier(), params.IssuerOID) {
+			if !reflect.DeepEqual(tai.Issuer, params.Issuer) {
 				return fmt.Errorf(
 					"IssuerId doesn't match: %s ≠ %s",
-					params.IssuerOID,
-					proof.TrustAnchorIdentifier().CAIdentifier(),
+					params.Issuer,
+					tai.Issuer,
 				)
 			}
 			aa := c.Assertion.Abridge()
@@ -726,8 +726,7 @@ func handleInspectCaParams(cc *cli.Context) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "issuer_id\t%s\n", p.IssuerId)
-	fmt.Fprintf(w, "issuer_oid\t%s\n", p.IssuerOID)
+	fmt.Fprintf(w, "issuer\t%s\n", p.Issuer)
 	fmt.Fprintf(w, "start_time\t%d\t%s\n", p.StartTime,
 		time.Unix(int64(p.StartTime), 0))
 	fmt.Fprintf(w, "batch_duration\t%d\t%s\n", p.BatchDuration,
@@ -770,7 +769,7 @@ func main() {
 						Name:      "new",
 						Usage:     "creates a new CA",
 						Action:    handleCaNew,
-						ArgsUsage: "<issuer-id> <issuer-oid> <http-server>",
+						ArgsUsage: "<issuer-oid> <http-server>",
 						Flags: []cli.Flag{
 							&cli.DurationFlag{
 								Name:    "batch-duration",

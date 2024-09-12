@@ -29,8 +29,7 @@ var (
 )
 
 type NewOpts struct {
-	IssuerId   string
-	IssuerOID  mtc.TrustAnchorIdentifier
+	Issuer     mtc.OID
 	HttpServer string
 
 	// Fields below are optional.
@@ -1035,8 +1034,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	h.params.StartTime = uint64(time.Now().Unix())
 
 	h.params.HttpServer = opts.HttpServer
-	h.params.IssuerId = opts.IssuerId
-	h.params.IssuerOID = opts.IssuerOID
+	h.params.Issuer = opts.Issuer
 
 	if opts.SignatureScheme == 0 {
 		opts.SignatureScheme = mtc.TLSDilitihium5r3
