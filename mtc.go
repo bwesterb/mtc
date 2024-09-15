@@ -1646,3 +1646,18 @@ func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
 	tai.Issuer = oid
 	return nil
 }
+
+func (oid *RelativeOID) Equal(rhs *RelativeOID) bool {
+	if rhs == nil {
+		return false
+	}
+	if len(*oid) == len(*rhs) {
+		for i, v := range *oid {
+			if v != (*rhs)[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}

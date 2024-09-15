@@ -4,8 +4,6 @@ import (
 	"errors"
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
-	"reflect"
-
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
 
@@ -620,7 +618,7 @@ func handleInspectCert(cc *cli.Context) error {
 			Number: tai.BatchNumber,
 		}
 
-		if !reflect.DeepEqual(tai.Issuer, params.Issuer) {
+		if !tai.Issuer.Equal(&params.Issuer) {
 			return fmt.Errorf(
 				"IssuerId doesn't match: %s ≠ %s",
 				params.Issuer,
