@@ -403,7 +403,7 @@ func handleCaNew(cc *cli.Context) error {
 	}
 
 	taiString := cc.Args().Get(0)
-	oid := mtc.OID{}
+	oid := mtc.RelativeOID{}
 	err := oid.UnmarshalText([]byte(taiString))
 	if err != nil {
 		return err

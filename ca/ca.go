@@ -29,7 +29,7 @@ var (
 )
 
 type NewOpts struct {
-	Issuer     mtc.OID
+	Issuer     mtc.RelativeOID
 	HttpServer string
 
 	// Fields below are optional.

@@ -107,7 +107,7 @@ For every batch, the CA signs that root together with all the roots
 Let's create an MTC CA.
 
 ```
-$ mtc ca new --batch-duration 5m --lifetime 1h 1230.12.15 ca.example.com/path
+$ mtc ca new --batch-duration 5m --lifetime 1h 62253.12.15 ca.example.com/path
 ```
 
 This creates a new MTC CA called `my-mtc-ca`, and puts the data in the
@@ -137,7 +137,7 @@ is `ca-params`, which contains the information about the CA:
 
 ```
 $ mtc inspect ca-params www/mtc/v1/ca-params
-issuer                 1230.12.15
+issuer                 62253.12.15
 start_time             1705677477 2024-01-19 16:17:57 +0100 CET
 batch_duration         300        5m0s
 life_time              3600       1h0m0s
@@ -376,7 +376,7 @@ dns              [example.com]
 ip4              [198.51.100.60]
 
 proof_type      merkle_tree_sha256
-CA OID          1230.12.15
+CA OID          62253.12.15
 batch           0
 index           0
 recomputed root c005dcdb53c4e41befcf3a294b815d8b8aa0a260e9f10bfd4e4cb52eb3724aa3

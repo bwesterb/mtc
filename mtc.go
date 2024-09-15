@@ -20,7 +20,7 @@ import (
 
 // CAParams holds the public parameters of a Merkle Tree CA
 type CAParams struct {
-	Issuer             OID
+	Issuer             RelativeOID
 	PublicKey          Verifier
 	ProofType          ProofType
 	StartTime          uint64
@@ -584,7 +584,9 @@ func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
 
-	b.AddBytes(ca.Issuer)
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(ca.Issuer)
+	})
 	buf, err := w.MarshalBinary()
 	if err != nil {
 		return nil, err
@@ -1472,14 +1474,14 @@ func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProo
 }
 
 type CAStore interface {
-	Lookup(oid OID) CAParams
+	Lookup(oid RelativeOID) CAParams
 }
 
 type LocalCAStore struct {
 	store map[string]CAParams
 }
 
-func (s *LocalCAStore) Lookup(oid OID) CAParams {
+func (s *LocalCAStore) Lookup(oid RelativeOID) CAParams {
 	return s.store[oid.String()]
 }
 
@@ -1495,17 +1497,17 @@ func (s *LocalCAStore) Add(params CAParams) {
 // TAI are OIDs relative to the Private Enterprise Numbers (PEN)
 // arc 1.3.6.1.4.1.
 type TrustAnchorIdentifier struct {
-	Issuer      OID
+	Issuer      RelativeOID
 	BatchNumber uint32
 }
 
-type OID []byte
+type RelativeOID []byte
 
 func (tai *TrustAnchorIdentifier) ProofType(store CAStore) ProofType {
 	return store.Lookup(tai.Issuer).ProofType
 }
 
-func (oid OID) segments() []uint32 {
+func (oid RelativeOID) segments() []uint32 {
 	var res []uint32
 	cur := uint32(0)
 	for i := 0; i < len(oid); i++ {
@@ -1531,7 +1533,7 @@ func (tai *TrustAnchorIdentifier) UnmarshalBinary(buf []byte) error {
 	return nil
 }
 
-func (oid OID) String() string {
+func (oid RelativeOID) String() string {
 	if oid == nil {
 		return "nil"
 	}
@@ -1549,7 +1551,7 @@ func (oid OID) String() string {
 	return buf.String()
 }
 
-func (oid *OID) FromSegments(segments []uint32) error {
+func (oid *RelativeOID) FromSegments(segments []uint32) error {
 	var buf bytes.Buffer
 	for _, v := range segments {
 		for j := 4; j >= 0; j-- {
@@ -1570,7 +1572,7 @@ func (oid *OID) FromSegments(segments []uint32) error {
 	return nil
 }
 
-func (oid *OID) UnmarshalText(text []byte) error {
+func (oid *RelativeOID) UnmarshalText(text []byte) error {
 	bits := strings.Split(string(text), ".")
 	var segments []uint32
 	for i, bit := range bits {
@@ -1594,7 +1596,7 @@ func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
 	if tai.Issuer == nil || len(tai.Issuer) == 0 {
 		return nil, errors.New("can't marshal uninitialized TrustAnchorIdentifier")
 	}
-	batch := OID{}
+	batch := RelativeOID{}
 	err := batch.FromSegments([]uint32{tai.BatchNumber})
 	if err != nil {
 		return nil, err
@@ -1634,7 +1636,7 @@ func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
 		}
 	}
 
-	oid := OID(oidBytes)
+	oid := RelativeOID(oidBytes)
 	segments := oid.segments()
 	tai.BatchNumber = segments[len(segments)-1]
 	err := oid.FromSegments(segments[:len(segments)-1])

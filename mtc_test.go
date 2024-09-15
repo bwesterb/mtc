@@ -76,7 +76,7 @@ func createTestAssertion(i int, sub Subject) Assertion {
 }
 
 func createTestCA() *CAParams {
-	tai := OID{}
+	tai := RelativeOID{}
 	_ = tai.FromSegments([]uint32{10, 20, 300})
 	ret := CAParams{
 		Issuer:             tai,
@@ -329,7 +329,7 @@ func TestTAIParsing(t *testing.T) {
 		{"32473.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1.1",
 			"81fd5901010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101"},
 	} {
-		var oid OID
+		var oid RelativeOID
 		if err := oid.UnmarshalText([]byte(tc.text)); err != nil {
 			t.Fatal(err)
 		}
@@ -363,7 +363,7 @@ func TestTAIParsing(t *testing.T) {
 		{"1..1", "OID: subidentifier 1: strconv.ParseUint: parsing \"\": invalid syntax"},
 		{"-1", "OID: subidentifier 0: strconv.ParseUint: parsing \"-1\": invalid syntax"},
 	} {
-		var oid OID
+		var oid RelativeOID
 		if err := oid.UnmarshalText([]byte(tc.s)); err == nil || err.Error() != tc.errString {
 			t.Fatalf("%s: %s ≠ %v", tc.s, tc.errString, err)
 		}
