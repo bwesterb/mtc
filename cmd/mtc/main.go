@@ -1,9 +1,9 @@
 package main
 
 import (
+	"errors"
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
-
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
 
@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -400,10 +399,18 @@ func handleCaNew(cc *cli.Context) error {
 		cli.ShowSubcommandHelp(cc)
 		return errArgs
 	}
+
+	taiString := cc.Args().Get(0)
+	oid := mtc.RelativeOID{}
+	err := oid.UnmarshalText([]byte(taiString))
+	if err != nil {
+		return err
+	}
+
 	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
-			IssuerId:   cc.Args().Get(0),
+			Issuer:     oid,
 			HttpServer: cc.Args().Get(1),
 
 			BatchDuration:   cc.Duration("batch-duration"),
@@ -575,9 +582,16 @@ func handleInspectCert(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	params, err := inspectGetCAParams(cc)
+	if err != nil {
+		return err
+	}
+
+	caStore := mtc.LocalCAStore{}
+	caStore.Add(*params)
 
 	var c mtc.BikeshedCertificate
-	err = c.UnmarshalBinary(buf)
+	err = c.UnmarshalBinary(buf, &caStore)
 	if err != nil {
 		return err
 	}
@@ -585,13 +599,11 @@ func handleInspectCert(cc *cli.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	writeAssertion(w, c.Assertion)
 	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "proof_type\t%v\n", c.Proof.TrustAnchor().ProofType())
+	tai := c.Proof.TrustAnchorIdentifier()
+	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType(&caStore))
 
-	switch anch := c.Proof.TrustAnchor().(type) {
-	case *mtc.MerkleTreeTrustAnchor:
-		fmt.Fprintf(w, "issuer_id\t%s\n", anch.IssuerId())
-		fmt.Fprintf(w, "batch\t%d\n", anch.BatchNumber())
-	}
+	fmt.Fprintf(w, "CA OID\t%s\n", tai.Issuer)
+	fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
 
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
@@ -601,37 +613,29 @@ func handleInspectCert(cc *cli.Context) error {
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
 		path := proof.Path()
-
-		params, err := inspectGetCAParams(cc)
-		if err == nil {
-			anch := proof.TrustAnchor().(*mtc.MerkleTreeTrustAnchor)
-
-			batch := &mtc.Batch{
-				CA:     params,
-				Number: anch.BatchNumber(),
-			}
-
-			if anch.IssuerId() != params.IssuerId {
-				return fmt.Errorf(
-					"IssuerId doesn't match: %s ≠ %s",
-					params.IssuerId,
-					anch.IssuerId(),
-				)
-			}
-			aa := c.Assertion.Abridge()
-			root, err := batch.ComputeRootFromAuthenticationPath(
-				proof.Index(),
-				path,
-				&aa,
-			)
-			if err != nil {
-				return fmt.Errorf("computing root: %w", err)
-			}
-
-			fmt.Fprintf(w, "recomputed root\t%x\n", root)
-		} else if err != errNoCaParams {
-			return err
+		batch := &mtc.Batch{
+			CA:     params,
+			Number: tai.BatchNumber,
 		}
+
+		if !tai.Issuer.Equal(&params.Issuer) {
+			return fmt.Errorf(
+				"IssuerId doesn't match: %s ≠ %s",
+				params.Issuer,
+				tai.Issuer,
+			)
+		}
+		aa := c.Assertion.Abridge()
+		root, err := batch.ComputeRootFromAuthenticationPath(
+			proof.Index(),
+			path,
+			&aa,
+		)
+		if err != nil {
+			return fmt.Errorf("computing root: %w", err)
+		}
+
+		fmt.Fprintf(w, "recomputed root\t%x\n", root)
 
 		w.Flush()
 		fmt.Printf("authentication path\n")
@@ -721,7 +725,7 @@ func handleInspectCaParams(cc *cli.Context) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "issuer_id\t%s\n", p.IssuerId)
+	fmt.Fprintf(w, "issuer\t%s\n", p.Issuer)
 	fmt.Fprintf(w, "start_time\t%d\t%s\n", p.StartTime,
 		time.Unix(int64(p.StartTime), 0))
 	fmt.Fprintf(w, "batch_duration\t%d\t%s\n", p.BatchDuration,
@@ -764,7 +768,7 @@ func main() {
 						Name:      "new",
 						Usage:     "creates a new CA",
 						Action:    handleCaNew,
-						ArgsUsage: "<issuer-id> <http-server>",
+						ArgsUsage: "<issuer-oid> <http-server>",
 						Flags: []cli.Flag{
 							&cli.DurationFlag{
 								Name:    "batch-duration",
@@ -780,6 +784,12 @@ func main() {
 								Name:    "storage-duration",
 								Aliases: []string{"s"},
 								Usage:   "time to serve assertions",
+							},
+							&cli.StringFlag{
+								Name:    "ca-path",
+								Aliases: []string{"p"},
+								Usage:   "root directory to store CA files",
+								Value:   ".",
 							},
 						},
 					},

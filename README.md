@@ -107,7 +107,7 @@ For every batch, the CA signs that root together with all the roots
 Let's create an MTC CA.
 
 ```
-$ mtc ca new --batch-duration 5m --lifetime 1h my-mtc-ca ca.example.com/path
+$ mtc ca new --batch-duration 5m --lifetime 1h 62253.12.15 ca.example.com/path
 ```
 
 This creates a new MTC CA called `my-mtc-ca`, and puts the data in the
@@ -137,7 +137,7 @@ is `ca-params`, which contains the information about the CA:
 
 ```
 $ mtc inspect ca-params www/mtc/v1/ca-params
-issuer_id              my-mtc-ca
+issuer                 62253.12.15
 start_time             1705677477 2024-01-19 16:17:57 +0100 CET
 batch_duration         300        5m0s
 life_time              3600       1h0m0s
@@ -356,33 +356,27 @@ tree_heads[2]  ab3cb1262fc084be0447c2b3d175d63f6ec2782dcc1443888b12f685976093d5
 
 ### Creating a certificate
 
-In MTC, a **certificate** is an assertion, together with the batch number,
-`issuer_id` of the CA, and an authentication path in the Merkle tree.
+In MTC, a **certificate** is an assertion,
+together with the TrustAnchorIdentifier (consisting of an OID for the CA and the batch number),
+and an authentication path in the Merkle tree.
 Let's create one for our initial assertion.
 
 ```
 $ mtc ca cert -i my-assertion -o my-cert
-$ mtc inspect cert my-cert
+```
+
+If we inspect the certificate, it can recompute the root from the authentication path and CA parameters:
+
+```
+$ mtc inspect -ca-params www/mtc/v1/ca-params cert my-cert
 subject_type     TLS
 signature_scheme p256
 public_key_hash  a02a1758e4c9d6511dc02f59301b9f29e41762d3d769c87a22333497984a41ef
 dns              [example.com]
 ip4              [198.51.100.60]
 
-proof_type merkle_tree_sha256
-issuer_id  my-mtc-ca
-batch      0
-index      0
-authentication path
- 00b17df8d909fd3e77005486a16ca00fdc9af38f92a23351359fd420d9f2ef78
-```
-
-If we provide the `ca-params` to `mtc inspect`, it can recompute the root
-from the authentication path:
-
-```
-$ mtc inspect -ca-params www/mtc/v1/ca-params cert my-cert
-[…]
+proof_type      merkle_tree_sha256
+CA OID          62253.12.15
 batch           0
 index           0
 recomputed root c005dcdb53c4e41befcf3a294b815d8b8aa0a260e9f10bfd4e4cb52eb3724aa3

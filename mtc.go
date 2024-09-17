@@ -18,10 +18,11 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
-// Public parameters of a Merkle Tree CA
+// CAParams holds the public parameters of a Merkle Tree CA
 type CAParams struct {
-	IssuerId           string
+	Issuer             RelativeOID
 	PublicKey          Verifier
+	ProofType          ProofType
 	StartTime          uint64
 	BatchDuration      uint64
 	Lifetime           uint64
@@ -133,34 +134,19 @@ const (
 	MerkleTreeProofType ProofType = iota
 )
 
-type TrustAnchor interface {
-	ProofType() ProofType
-	Info() []byte
-}
-
-type MerkleTreeTrustAnchor struct {
-	issuerId    string
-	batchNumber uint32
-}
-
-type UnknownTrustAnchor struct {
-	typ  ProofType
-	info []byte
-}
-
 type Proof interface {
-	TrustAnchor() TrustAnchor
+	TrustAnchorIdentifier() TrustAnchorIdentifier
 	Info() []byte
 }
 
 type MerkleTreeProof struct {
-	anchor *MerkleTreeTrustAnchor
+	anchor TrustAnchorIdentifier
 	index  uint64
 	path   []byte
 }
 
 type UnknownProof struct {
-	anchor *UnknownTrustAnchor
+	anchor TrustAnchorIdentifier
 	info   []byte
 }
 
@@ -174,41 +160,7 @@ type SignedValidityWindow struct {
 	Signature []byte
 }
 
-func (t *MerkleTreeTrustAnchor) ProofType() ProofType {
-	return MerkleTreeProofType
-}
-
-func (t *MerkleTreeTrustAnchor) Info() []byte {
-	var b cryptobyte.Builder
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(t.issuerId))
-	})
-	b.AddUint32(t.batchNumber)
-	ret, err := b.Bytes()
-	if err != nil {
-		// Can only happen if issuerId is too long, but we checked for this.
-		panic(err)
-	}
-	return ret
-}
-
-func (t *MerkleTreeTrustAnchor) BatchNumber() uint32 {
-	return t.batchNumber
-}
-
-func (t *MerkleTreeTrustAnchor) IssuerId() string {
-	return t.issuerId
-}
-
-func (t *UnknownTrustAnchor) ProofType() ProofType {
-	return t.typ
-}
-
-func (t *UnknownTrustAnchor) Info() []byte {
-	return t.info
-}
-
-func (p *MerkleTreeProof) TrustAnchor() TrustAnchor {
+func (p *MerkleTreeProof) TrustAnchorIdentifier() TrustAnchorIdentifier {
 	return p.anchor
 }
 
@@ -234,7 +186,7 @@ func (p *MerkleTreeProof) Index() uint64 {
 	return p.index
 }
 
-func (p *UnknownProof) TrustAnchor() TrustAnchor {
+func (p *UnknownProof) TrustAnchorIdentifier() TrustAnchorIdentifier {
 	return p.anchor
 }
 
@@ -326,7 +278,7 @@ func (t *Tree) NodeCount() uint {
 	return TreeNodeCount(t.nLeaves)
 }
 
-// Returns the number of nodes in the Merkle tree for a batch, which has
+// TreeNodeCount returns the number of nodes in the Merkle tree for a batch, which has
 // nLeaves assertions.
 func TreeNodeCount(nLeaves uint64) uint {
 	if nLeaves == 0 {
@@ -369,52 +321,41 @@ func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
 	buf, err := c.Assertion.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to marshal Assertion: %w", err)
+		return nil, fmt.Errorf("failed to marshal Assertion: %w", err)
 	}
 	b.AddBytes(buf)
-	b.AddUint16(uint16(c.Proof.TrustAnchor().ProofType()))
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(c.Proof.TrustAnchor().Info())
-	})
+
+	buf, err = c.Proof.TrustAnchorIdentifier().MarshalBinary()
+	b.AddBytes(buf)
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(c.Proof.Info())
 	})
 	return b.Bytes()
 }
 
-func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
+func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) error {
 	s := cryptobyte.String(data)
 	err := c.Assertion.unmarshal(&s)
 	if err != nil {
-		return fmt.Errorf("Failed to unmarshal Assertion: %w", err)
+		return fmt.Errorf("failed to unmarshal Assertion: %w", err)
 	}
 	var (
-		typ        ProofType
-		proofInfo  cryptobyte.String
-		anchorInfo cryptobyte.String
+		proofInfo cryptobyte.String
 	)
-	if !s.ReadUint16((*uint16)(&typ)) ||
-		!s.ReadUint8LengthPrefixed(&anchorInfo) ||
-		!s.ReadUint16LengthPrefixed(&proofInfo) {
+	tai := TrustAnchorIdentifier{}
+	err = tai.unmarshal(&s)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal TrustAnchorIdentifier: %w", err)
+	}
+	if !s.ReadUint16LengthPrefixed(&proofInfo) {
 		return ErrTruncated
 	}
 	if !s.Empty() {
 		return ErrExtraBytes
 	}
-	switch typ {
+	switch tai.ProofType(caStore) {
 	case MerkleTreeProofType:
-		proof := &MerkleTreeProof{
-			anchor: &MerkleTreeTrustAnchor{},
-		}
-		var issuerId []byte
-		if !anchorInfo.ReadUint8LengthPrefixed((*cryptobyte.String)(&issuerId)) ||
-			!anchorInfo.ReadUint32(&proof.anchor.batchNumber) {
-			return ErrTruncated
-		}
-		proof.anchor.issuerId = string(issuerId)
-		if !anchorInfo.Empty() {
-			return ErrExtraBytes
-		}
+		proof := &MerkleTreeProof{}
 		if !proofInfo.ReadUint64(&proof.index) ||
 			!copyUint16LengthPrefixed(&proofInfo, &proof.path) {
 			return ErrTruncated
@@ -422,15 +363,13 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte) error {
 		if !proofInfo.Empty() {
 			return ErrExtraBytes
 		}
+		proof.anchor = tai
 		c.Proof = proof
 		return nil
 	}
 	c.Proof = &UnknownProof{
-		anchor: &UnknownTrustAnchor{
-			typ:  typ,
-			info: []byte(anchorInfo),
-		},
-		info: []byte(proofInfo),
+		anchor: tai,
+		info:   []byte(proofInfo),
 	}
 	return nil
 }
@@ -488,12 +427,13 @@ func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(p.IssuerId))
+		b.AddBytes(p.Issuer)
 	})
 	b.AddUint16(uint16(p.PublicKey.Scheme()))
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(p.PublicKey.Bytes())
 	})
+	b.AddUint16(uint16(p.ProofType))
 	b.AddUint64(p.StartTime)
 	b.AddUint64(p.BatchDuration)
 	b.AddUint64(p.Lifetime)
@@ -518,6 +458,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(&issuerBuf)) ||
 		!s.ReadUint16((*uint16)(&sigScheme)) ||
 		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&pkBuf)) ||
+		!s.ReadUint16((*uint16)(&p.ProofType)) ||
 		!s.ReadUint64(&p.StartTime) ||
 		!s.ReadUint64(&p.BatchDuration) ||
 		!s.ReadUint64(&p.Lifetime) ||
@@ -531,7 +472,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 		return ErrExtraBytes
 	}
 
-	p.IssuerId = string(issuerBuf)
+	p.Issuer = issuerBuf
 	p.HttpServer = string(httpServerBuf)
 	p.PublicKey, err = UnmarshalVerifier(sigScheme, pkBuf)
 	if err != nil {
@@ -542,11 +483,14 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 }
 
 func (p *CAParams) Validate() error {
-	if len(p.IssuerId) > 32 {
-		return errors.New("issuer_id must be 32 bytes or less")
+	// If the issuer uses the full 255 bytes, there can be at most 128 batches,
+	// as there is only a single byte left for encoding the batch.
+	// TODO Maybe reduce the maximum allowed size of the issuer OID.
+	if len(p.Issuer) > 255 {
+		return errors.New("issuer must be 255 bytes or less")
 	}
-	if len(p.IssuerId) == 0 {
-		return errors.New("issuer_id can't be empty")
+	if len(p.Issuer) == 0 {
+		return errors.New("issuer can't be empty")
 	}
 	if p.Lifetime%p.BatchDuration != 0 {
 		return errors.New("lifetime must be a multiple of batch_duration")
@@ -639,8 +583,9 @@ func (w *SignedValidityWindow) MarshalBinary() ([]byte, error) {
 func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
+
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(ca.IssuerId))
+		b.AddBytes(ca.Issuer)
 	})
 	buf, err := w.MarshalBinary()
 	if err != nil {
@@ -670,11 +615,12 @@ func (p *CAParams) newTreeHeads(prevHeads, root []byte) ([]byte, error) {
 	return append(prevHeads[HashLen:len(prevHeads)], root...), nil
 }
 
-func (batch *Batch) Anchor() *MerkleTreeTrustAnchor {
-	return &MerkleTreeTrustAnchor{
-		issuerId:    batch.CA.IssuerId,
-		batchNumber: batch.Number,
+func (batch *Batch) Anchor() TrustAnchorIdentifier {
+	tai := TrustAnchorIdentifier{
+		Issuer:      batch.CA.Issuer,
+		BatchNumber: batch.Number,
 	}
+	return tai
 }
 
 func (batch *Batch) SignValidityWindow(signer Signer, prevHeads []byte,
@@ -1073,7 +1019,7 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 
 	b.AddUint8(1)
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(batch.CA.IssuerId))
+		b.AddBytes(batch.CA.Issuer)
 	})
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
@@ -1096,7 +1042,7 @@ func (batch *Batch) hashEmpty(out []byte, index uint64, level uint8) error {
 	var b cryptobyte.Builder
 	b.AddUint8(0)
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(batch.CA.IssuerId))
+		b.AddBytes(batch.CA.Issuer)
 	})
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
@@ -1188,7 +1134,7 @@ func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
 	var b cryptobyte.Builder
 	b.AddUint8(2)
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(batch.CA.IssuerId))
+		b.AddBytes(batch.CA.Issuer)
 	})
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
@@ -1527,11 +1473,53 @@ func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProo
 	}
 }
 
-// A Trust Anchor Identifier (TAI) is used to identify a CA, or a specific batch.
+type CAStore interface {
+	Lookup(oid RelativeOID) CAParams
+}
+
+type LocalCAStore struct {
+	store map[string]CAParams
+}
+
+func (s *LocalCAStore) Lookup(oid RelativeOID) CAParams {
+	return s.store[oid.String()]
+}
+
+func (s *LocalCAStore) Add(params CAParams) {
+	if s.store == nil {
+		s.store = make(map[string]CAParams)
+	}
+	s.store[params.Issuer.String()] = params
+}
+
+// A TrustAnchorIdentifier (TAI) is used to identify a CA, or a specific batch.
 //
 // TAI are OIDs relative to the Private Enterprise Numbers (PEN)
-// arc  1.3.6.1.4.1.
-type TrustAnchorIdentifier []byte
+// arc 1.3.6.1.4.1.
+type TrustAnchorIdentifier struct {
+	Issuer      RelativeOID
+	BatchNumber uint32
+}
+
+type RelativeOID []byte
+
+func (tai *TrustAnchorIdentifier) ProofType(store CAStore) ProofType {
+	return store.Lookup(tai.Issuer).ProofType
+}
+
+func (oid RelativeOID) segments() []uint32 {
+	var res []uint32
+	cur := uint32(0)
+	for i := 0; i < len(oid); i++ {
+		cur = (cur << 7) | uint32(oid[i]&0x7f)
+
+		if oid[i]&0x80 == 0 {
+			res = append(res, cur)
+			cur = 0
+		}
+	}
+	return res
+}
 
 func (tai *TrustAnchorIdentifier) UnmarshalBinary(buf []byte) error {
 	s := cryptobyte.String(buf)
@@ -1545,39 +1533,27 @@ func (tai *TrustAnchorIdentifier) UnmarshalBinary(buf []byte) error {
 	return nil
 }
 
-func (tai TrustAnchorIdentifier) String() string {
-	if tai == nil {
+func (oid RelativeOID) String() string {
+	if oid == nil {
 		return "nil"
 	}
 
 	var buf bytes.Buffer
 
-	child := 0
-	cur := uint64(0)
-	for i := 0; i < len(tai); i++ {
-		cur = (cur << 7) | uint64(tai[i]&0x7f)
-
-		if tai[i]&0x80 == 0 {
-			if child != 0 {
-				fmt.Fprintf(&buf, ".")
-			}
-			fmt.Fprintf(&buf, "%d", cur)
-			cur = 0
-			child++
+	first := true
+	for _, s := range oid.segments() {
+		if !first {
+			_, _ = fmt.Fprintf(&buf, ".")
 		}
+		first = false
+		_, _ = fmt.Fprintf(&buf, "%d", s)
 	}
-
 	return buf.String()
 }
 
-func (tai *TrustAnchorIdentifier) UnmarshalText(text []byte) error {
-	bits := strings.Split(string(text), ".")
+func (oid *RelativeOID) FromSegments(segments []uint32) error {
 	var buf bytes.Buffer
-	for i, bit := range bits {
-		v, err := strconv.ParseUint(bit, 10, 32)
-		if err != nil {
-			return fmt.Errorf("TrustAnchorIdentifier: subidentifier %d: %v", i, err)
-		}
+	for _, v := range segments {
 		for j := 4; j >= 0; j-- {
 			cur := v >> (j * 7)
 			if cur != 0 || j == 0 {
@@ -1589,49 +1565,99 @@ func (tai *TrustAnchorIdentifier) UnmarshalText(text []byte) error {
 			}
 		}
 	}
-	*tai = buf.Bytes()
-	if len(*tai) > 255 {
-		return errors.New("TrustAnchorIdentifier: over 255 bytes")
+	*oid = buf.Bytes()
+	if len(*oid) > 255 {
+		return errors.New("OID: over 255 bytes")
+	}
+	return nil
+}
+
+func (oid *RelativeOID) UnmarshalText(text []byte) error {
+	bits := strings.Split(string(text), ".")
+	var segments []uint32
+	for i, bit := range bits {
+		v, err := strconv.ParseUint(bit, 10, 32)
+		if err != nil {
+			return fmt.Errorf("OID: subidentifier %d: %v", i, err)
+		}
+		segments = append(segments, uint32(v))
+	}
+	err := oid.FromSegments(segments)
+	if err != nil {
+		return err
+	}
+	if len(*oid) > 255 {
+		return errors.New("OID: over 255 bytes")
 	}
 	return nil
 }
 
 func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
-	if tai == nil || len(tai) == 0 {
-		return nil, errors.New("Can't marshal uninitialized TrustAnchorIdentifier")
+	if tai.Issuer == nil || len(tai.Issuer) == 0 {
+		return nil, errors.New("can't marshal uninitialized TrustAnchorIdentifier")
+	}
+	batch := RelativeOID{}
+	err := batch.FromSegments([]uint32{tai.BatchNumber})
+	if err != nil {
+		return nil, err
 	}
 	var b cryptobyte.Builder
 	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(tai))
+		b.AddBytes(tai.Issuer)
+		b.AddBytes(batch)
 	})
 	return b.Bytes()
 }
 
 func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
-	if !copyUint8LengthPrefixed(s, (*[]byte)(tai)) || len(*tai) == 0 {
+	var oidBytes []byte
+	if !copyUint8LengthPrefixed(s, &oidBytes) || len(oidBytes) == 0 {
 		return ErrTruncated
 	}
 
 	cur := uint64(0)
 	child := 0
 
-	for i := 0; i < len(*tai); i++ {
-		if cur == 0 && (*tai)[i] == 0x80 {
+	for i := 0; i < len(oidBytes); i++ {
+		if cur == 0 && (oidBytes)[i] == 0x80 {
 			return errors.New("TrustAnchorIdentifier: not normalized; starts with 0x80")
 		}
-		cur = (cur << 7) | uint64((*tai)[i]&0x7f)
+		cur = (cur << 7) | uint64((oidBytes)[i]&0x7f)
 
 		if cur > 0xffffffff {
 			return fmt.Errorf("TrustAnchorIdentifier: overflow of sub-identifier %d", child)
 		}
 
-		if (*tai)[i]&0x80 == 0 {
+		if (oidBytes)[i]&0x80 == 0 {
 			cur = 0
 			child++
-		} else if i == len(*tai)-1 {
+		} else if i == len(oidBytes)-1 {
 			return errors.New("TrustAnchorIdentifier: ends on continuation")
 		}
 	}
 
+	oid := RelativeOID(oidBytes)
+	segments := oid.segments()
+	tai.BatchNumber = segments[len(segments)-1]
+	err := oid.FromSegments(segments[:len(segments)-1])
+	if err != nil {
+		return err
+	}
+	tai.Issuer = oid
 	return nil
+}
+
+func (oid *RelativeOID) Equal(rhs *RelativeOID) bool {
+	if rhs == nil {
+		return false
+	}
+	if len(*oid) == len(*rhs) {
+		for i, v := range *oid {
+			if v != (*rhs)[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
