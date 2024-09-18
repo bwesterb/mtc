@@ -26,14 +26,14 @@ import (
 	"math/big"
 	"slices"
 
-	"github.com/bwesterb/mtc"
+	"github.com/bwesterb/mtc/pkg/mtc"
 	"golang.org/x/exp/mmap"
 
 	"golang.org/x/crypto/cryptobyte"
 )
 
-// Handle to an index
-type Index struct {
+// IndexHandle is a handle to an index
+type IndexHandle struct {
 	r *mmap.ReaderAt
 }
 
@@ -42,24 +42,24 @@ type IndexSearchResult struct {
 	Offset         uint64
 }
 
-// Opens an index
-func OpenIndex(path string) (*Index, error) {
+// OpenIndex opens an index
+func OpenIndex(path string) (*IndexHandle, error) {
 	r, err := mmap.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("mmap(%s): %w", path, err)
 	}
 
 	if r.Len() == 0 {
-		r.Close()
+		_ = r.Close()
 		r = nil
 	}
 
-	return &Index{
+	return &IndexHandle{
 		r: r,
 	}, nil
 }
 
-func (h *Index) Close() error {
+func (h *IndexHandle) Close() error {
 	if h.r == nil {
 		return nil
 	}
@@ -67,8 +67,8 @@ func (h *Index) Close() error {
 	return h.r.Close()
 }
 
-// Look up hash in the index. If not found, returns nil.
-func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
+// Search looks up the hash in the index. If not found, it returns nil.
+func (h *IndexHandle) Search(hash []byte) (*IndexSearchResult, error) {
 	const hl = int(mtc.HashLen)
 	el := hl + 16 // length of indexEntry
 
@@ -161,11 +161,11 @@ type indexEntry struct {
 	offset uint64
 }
 
-// Reads a stream of AbridgedAssertions from r, and writes the index to w.
+// ComputeIndex reads a stream of AbridgedAssertions from r, and writes the index to w.
 func ComputeIndex(r io.Reader, w io.Writer) error {
 	// First compute keys
 	seqno := uint64(0)
-	entries := []indexEntry{}
+	var entries []indexEntry
 
 	var key [mtc.HashLen]byte
 	err := mtc.UnmarshalAbridgedAssertions(r, func(offset int,

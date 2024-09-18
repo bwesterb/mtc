@@ -15,8 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bwesterb/mtc"
-
+	"github.com/bwesterb/mtc/pkg/mtc"
 	"github.com/nightlyone/lockfile"
 	"golang.org/x/crypto/cryptobyte"
 )
@@ -24,8 +23,8 @@ import (
 const csLen = 32
 
 var (
-	ErrChecksumInvalid = errors.New("Invalid checksum")
-	ErrClosed          = errors.New("Handle is closed")
+	ErrChecksumInvalid = errors.New("invalid checksum")
+	ErrClosed          = errors.New("handle is closed")
 )
 
 type NewOpts struct {
@@ -40,7 +39,7 @@ type NewOpts struct {
 	StorageDuration time.Duration
 }
 
-// Handle for exclusive access to a Merkle Tree CA state.
+// Handle for exclusive access to a Merkle TreeHandle CA state.
 type Handle struct {
 	params mtc.CAParams
 	signer mtc.Signer
@@ -48,9 +47,9 @@ type Handle struct {
 	path   string
 	closed bool
 
-	indices map[uint32]*Index
+	indices map[uint32]*IndexHandle
 	aas     map[uint32]*os.File
-	trees   map[uint32]*Tree
+	trees   map[uint32]*TreeHandle
 
 	batchNumbersCache []uint32 // cache for existing batches
 }
@@ -62,7 +61,7 @@ type QueuedAssertion struct {
 
 func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
 	var (
-		s        cryptobyte.String = cryptobyte.String(data)
+		s        cryptobyte.String = data
 		checksum [csLen]byte
 	)
 	if !s.CopyBytes(checksum[:]) {
@@ -72,12 +71,12 @@ func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
 	a.Checksum = make([]byte, csLen)
 	copy(a.Checksum, checksum[:])
 
-	checksum2 := sha256.Sum256([]byte(s))
+	checksum2 := sha256.Sum256(s)
 	if !bytes.Equal(checksum2[:], checksum[:]) {
 		return ErrChecksumInvalid
 	}
 
-	if err := a.Assertion.UnmarshalBinary([]byte(s)); err != nil {
+	if err := a.Assertion.UnmarshalBinary(s); err != nil {
 		return err
 	}
 
@@ -90,7 +89,7 @@ func (a *QueuedAssertion) marshalAndCheckAssertion() ([]byte, error) {
 		return nil, err
 	}
 
-	checksum2 := sha256.Sum256([]byte(buf))
+	checksum2 := sha256.Sum256(buf)
 	if a.Checksum == nil {
 		a.Checksum = checksum2[:]
 	} else if !bytes.Equal(checksum2[:], a.Checksum) {
@@ -100,8 +99,8 @@ func (a *QueuedAssertion) marshalAndCheckAssertion() ([]byte, error) {
 	return buf, nil
 }
 
-// If set, checks whether the Checksum is correct. If not set, sets the
-// Checksum to the correct value.
+// Check checks whether the Checksum is correct, if set.
+// If not set, it sets the Checksum to the correct value.
 func (a *QueuedAssertion) Check() error {
 	_, err := a.marshalAndCheckAssertion()
 	return err
@@ -130,15 +129,15 @@ func (ca *Handle) Close() error {
 	}
 
 	for _, idx := range ca.indices {
-		idx.Close()
+		_ = idx.Close()
 	}
 
 	for _, r := range ca.aas {
-		r.Close()
+		_ = r.Close()
 	}
 
 	for _, t := range ca.trees {
-		t.Close()
+		_ = t.Close()
 	}
 
 	ca.closed = true
@@ -146,11 +145,11 @@ func (ca *Handle) Close() error {
 }
 
 // Drops all entries from the queue
-func (h *Handle) dropQueue() error {
-	if h.closed {
+func (ca *Handle) dropQueue() error {
+	if ca.closed {
 		return ErrClosed
 	}
-	w, err := os.OpenFile(h.queuePath(), os.O_TRUNC, 0o644)
+	w, err := os.OpenFile(ca.queuePath(), os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("truncating queue: %w", err)
 	}
@@ -161,16 +160,16 @@ func (h *Handle) dropQueue() error {
 	return nil
 }
 
-// Queue multiple assertions for publication.
+// QueueMultiple assertions for publication.
 //
-// For each entry, if checksum is not nil, makes sure the assertion
+// For each entry, if checksum is not nil, it makes sure the assertion
 // matches the checksum
-func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) error) error {
-	if h.closed {
+func (ca *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) error) error {
+	if ca.closed {
 		return ErrClosed
 	}
 
-	w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
+	w, err := os.OpenFile(ca.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening queue: %w", err)
 	}
@@ -207,9 +206,9 @@ func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) err
 
 // Queue assertion for publication.
 //
-// If checksum is not nil, makes sure assertion matches the checksum.
-func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
-	return h.QueueMultiple(func(yield func(qa QueuedAssertion) error) error {
+// If checksum is not nil, it makes sure assertion matches the checksum.
+func (ca *Handle) Queue(a mtc.Assertion, checksum []byte) error {
+	return ca.QueueMultiple(func(yield func(qa QueuedAssertion) error) error {
 		return yield(
 			QueuedAssertion{
 				Checksum:  checksum,
@@ -219,15 +218,15 @@ func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
 	})
 }
 
-// Load private state of Merkle Tree CA, and acquire lock.
+// Open loads private state of Merkle TreeHandle CA, and acquires lock.
 //
 // Call Handle.Close() when done.
 func Open(path string) (*Handle, error) {
 	h := Handle{
 		path:    path,
-		indices: make(map[uint32]*Index),
+		indices: make(map[uint32]*IndexHandle),
 		aas:     make(map[uint32]*os.File),
-		trees:   make(map[uint32]*Tree),
+		trees:   make(map[uint32]*TreeHandle),
 	}
 	if err := h.lock(); err != nil {
 		return nil, err
@@ -258,58 +257,58 @@ func Open(path string) (*Handle, error) {
 	return &h, nil
 }
 
-func (h Handle) skPath() string {
-	return gopath.Join(h.path, "signing.key")
+func (ca *Handle) skPath() string {
+	return gopath.Join(ca.path, "signing.key")
 }
 
-func (h Handle) paramsPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "ca-params")
+func (ca *Handle) paramsPath() string {
+	return gopath.Join(ca.path, "www", "mtc", "v1", "ca-params")
 }
 
-func (h Handle) queuePath() string {
-	return gopath.Join(h.path, "queue")
+func (ca *Handle) queuePath() string {
+	return gopath.Join(ca.path, "queue")
 }
 
-func (h Handle) treePath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "tree")
+func (ca *Handle) treePath(number uint32) string {
+	return gopath.Join(ca.batchPath(number), "tree")
 }
 
-func (h Handle) indexPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "index")
+func (ca *Handle) indexPath(number uint32) string {
+	return gopath.Join(ca.batchPath(number), "index")
 }
 
-func (h Handle) aaPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "abridged-assertions")
+func (ca *Handle) aaPath(number uint32) string {
+	return gopath.Join(ca.batchPath(number), "abridged-assertions")
 }
 
-func (h Handle) batchPath(number uint32) string {
-	return gopath.Join(h.batchesPath(), fmt.Sprintf("%d", number))
+func (ca *Handle) batchPath(number uint32) string {
+	return gopath.Join(ca.batchesPath(), fmt.Sprintf("%d", number))
 }
 
-func (h Handle) latestBatchPath() string {
-	return gopath.Join(h.batchesPath(), "latest")
+func (ca *Handle) latestBatchPath() string {
+	return gopath.Join(ca.batchesPath(), "latest")
 }
 
-func (h Handle) batchesPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "batches")
+func (ca *Handle) batchesPath() string {
+	return gopath.Join(ca.path, "www", "mtc", "v1", "batches")
 }
 
-func (h Handle) tmpPath() string {
-	return gopath.Join(h.path, "tmp")
+func (ca *Handle) tmpPath() string {
+	return gopath.Join(ca.path, "tmp")
 }
 
-func (h Handle) getSignedValidityWindow(number uint32) (
+func (ca *Handle) getSignedValidityWindow(number uint32) (
 	*mtc.SignedValidityWindow, error) {
 	var w mtc.SignedValidityWindow
 
 	buf, err := os.ReadFile(
-		gopath.Join(h.batchPath(number), "signed-validity-window"),
+		gopath.Join(ca.batchPath(number), "signed-validity-window"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	err = w.UnmarshalBinary(buf, &h.params)
+	err = w.UnmarshalBinary(buf, &ca.params)
 	if err != nil {
 		return nil, err
 	}
@@ -317,34 +316,34 @@ func (h Handle) getSignedValidityWindow(number uint32) (
 	return &w, nil
 }
 
-func (h *Handle) lock() error {
-	lockPath := gopath.Join(h.path, "lock")
+func (ca *Handle) lock() error {
+	lockPath := gopath.Join(ca.path, "lock")
 	absLockPath, err := filepath.Abs(lockPath)
 	if err != nil {
 		return fmt.Errorf("filepath.Abs(%s): %w", lockPath, err)
 	}
 	flock, err := lockfile.New(absLockPath)
 	if err != nil {
-		return fmt.Errorf("Creating lock %s: %w", absLockPath, err)
+		return fmt.Errorf("creating lock %s: %w", absLockPath, err)
 	}
-	h.flock = flock
+	ca.flock = flock
 	if err := flock.TryLock(); err != nil {
-		return fmt.Errorf("Acquiring lock %s: %w", absLockPath, err)
+		return fmt.Errorf("acquiring lock %s: %w", absLockPath, err)
 	}
 	return nil
 }
 
 // Returns a sorted list of batches for which a directory was created.
-func (h *Handle) listBatchNumbers() ([]uint32, error) {
-	if h.batchNumbersCache != nil {
-		return h.batchNumbersCache, nil
+func (ca *Handle) listBatchNumbers() ([]uint32, error) {
+	if ca.batchNumbersCache != nil {
+		return ca.batchNumbersCache, nil
 	}
 
-	ds, err := os.ReadDir(h.batchesPath())
+	ds, err := os.ReadDir(ca.batchesPath())
 	if err != nil {
 		return nil, err
 	}
-	ret := []uint32{}
+	var ret []uint32
 	for _, d := range ds {
 		if !d.IsDir() {
 			continue
@@ -360,15 +359,15 @@ func (h *Handle) listBatchNumbers() ([]uint32, error) {
 		return ret[i] < ret[j]
 	})
 
-	h.batchNumbersCache = ret
+	ca.batchNumbersCache = ret
 
 	return ret, nil
 }
 
 // Returns range of batches for which a directory was created.
-func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
+func (ca *Handle) listBatchRange() (mtc.BatchRange, error) {
 	var ret mtc.BatchRange
-	numbers, err := h.listBatchNumbers()
+	numbers, err := ca.listBatchNumbers()
 	if err != nil {
 		return ret, err
 	}
@@ -378,7 +377,7 @@ func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
 	begin := numbers[0]
 	end := numbers[len(numbers)-1]
 	if end-begin != uint32(len(numbers)-1) {
-		return ret, fmt.Errorf("Missing batches")
+		return ret, fmt.Errorf("missing batches")
 	}
 	return mtc.BatchRange{
 		Begin: begin,
@@ -386,11 +385,11 @@ func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
 	}, nil
 }
 
-// Calls f on each assertion queued to be published.
-func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
-	r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
+// WalkQueue calls f on each assertion queued to be published.
+func (ca *Handle) WalkQueue(f func(QueuedAssertion) error) error {
+	r, err := os.OpenFile(ca.queuePath(), os.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("Opening queue: %w", err)
+		return fmt.Errorf("opening queue: %w", err)
 	}
 	defer r.Close()
 
@@ -407,7 +406,7 @@ func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("Reading queue: %w", err)
+			return fmt.Errorf("reading queue: %w", err)
 		}
 		s := cryptobyte.String(prefix[:])
 		_ = s.ReadUint16(&aLen)
@@ -415,12 +414,12 @@ func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
 		buf := make([]byte, int(aLen))
 		_, err = io.ReadFull(br, buf)
 		if err != nil {
-			return fmt.Errorf("Reading queue: %w", err)
+			return fmt.Errorf("reading queue: %w", err)
 		}
 
 		err = qa.UnmarshalBinary(buf)
 		if err != nil {
-			return fmt.Errorf("Parsing queue: %w", err)
+			return fmt.Errorf("parsing queue: %w", err)
 		}
 
 		err = f(qa)
@@ -433,9 +432,9 @@ func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
 }
 
 // Drop batches that don't need to be stored anymore.
-func (h *Handle) dropOldBatches(dt time.Time) error {
-	expectedStored := h.params.StoredBatches(dt)
-	existingBatches, err := h.listBatchRange()
+func (ca *Handle) dropOldBatches(dt time.Time) error {
+	expectedStored := ca.params.StoredBatches(dt)
+	existingBatches, err := ca.listBatchRange()
 	if err != nil {
 		return fmt.Errorf("listing existing batches: %w", err)
 	}
@@ -447,60 +446,60 @@ func (h *Handle) dropOldBatches(dt time.Time) error {
 	if expectedStored.AreAllPast(existingBatches.End - 1) {
 		// It should not happen that we delete the last active batch,
 		// as we issue new (empty) batches before we prune the old.
-		// Just in case, we check for it. Otherwise we'd be in a state,
-		// where it's more difficult to recover from.
+		// Just in case, we check for it.
+		// Otherwise, we'd be in a state where it's more difficult to recover from.
 		return fmt.Errorf("would delete all existing batches")
 	}
 
-	h.batchNumbersCache = nil // Invalidate cache of existing batches
+	ca.batchNumbersCache = nil // Invalidate cache of existing batches
 
 	for batch := existingBatches.Begin; batch < existingBatches.End; batch++ {
 		if !expectedStored.AreAllPast(batch) {
 			break
 		}
 
-		if err := h.closeBatch(batch); err != nil {
+		if err := ca.closeBatch(batch); err != nil {
 			return err
 		}
 
 		slog.Info("Removing batch", "batch", batch)
-		if err := os.RemoveAll(h.batchPath(batch)); err != nil {
-			return fmt.Errorf("Removing batch %d: %w", batch, err)
+		if err := os.RemoveAll(ca.batchPath(batch)); err != nil {
+			return fmt.Errorf("removing batch %d: %w", batch, err)
 		}
 	}
 	return nil
 }
 
 // Close any (cached) open files for the given batch.
-func (h *Handle) closeBatch(batch uint32) error {
-	if idx, ok := h.indices[batch]; ok {
+func (ca *Handle) closeBatch(batch uint32) error {
+	if idx, ok := ca.indices[batch]; ok {
 		err := idx.Close()
 		if err != nil {
 			return fmt.Errorf("closing index for %d: %w", batch, err)
 		}
-		delete(h.indices, batch)
+		delete(ca.indices, batch)
 	}
 
-	if r, ok := h.aas[batch]; ok {
+	if r, ok := ca.aas[batch]; ok {
 		err := r.Close()
 		if err != nil {
 			return fmt.Errorf("closing abridged-assertions for %d: %w", batch, err)
 		}
-		delete(h.aas, batch)
+		delete(ca.aas, batch)
 	}
 
-	if r, ok := h.trees[batch]; ok {
+	if r, ok := ca.trees[batch]; ok {
 		err := r.Close()
 		if err != nil {
 			return fmt.Errorf("closing tree for  %d: %w", batch, err)
 		}
-		delete(h.trees, batch)
+		delete(ca.trees, batch)
 	}
 	return nil
 }
 
 // Returns the AbridgedAssertions index for the given batch.
-func (ca *Handle) indexFor(batch uint32) (*Index, error) {
+func (ca *Handle) indexFor(batch uint32) (*IndexHandle, error) {
 	if idx, ok := ca.indices[batch]; ok {
 		return idx, nil
 	}
@@ -515,8 +514,8 @@ func (ca *Handle) indexFor(batch uint32) (*Index, error) {
 	return idx, nil
 }
 
-// Return the Tree handle for the given batch.
-func (ca *Handle) treeFor(batch uint32) (*Tree, error) {
+// Return the TreeHandle handle for the given batch.
+func (ca *Handle) treeFor(batch uint32) (*TreeHandle, error) {
 	if t, ok := ca.trees[batch]; ok {
 		return t, nil
 	}
@@ -551,7 +550,7 @@ type keySearchResult struct {
 	Offset         uint64
 }
 
-// Returns the certificate for an issued assertion
+// CertificateFor returns the certificate for an issued assertion
 func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
 	aa := a.Abridge()
 	var key [mtc.HashLen]byte
@@ -589,7 +588,7 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 	}, nil
 }
 
-// Search for AbridgedAssertions's batch/seqno/offset by key.
+// aaByKey searches for AbridgedAssertion's batch/sequenceNumber/offset by key.
 func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	batches, err := ca.listBatchRange()
 	if err != nil {
@@ -603,7 +602,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	for batch := batches.End - 1; batch <= batches.End; batch-- {
 		res, err := ca.aaByKeyIn(batch, key)
 		if err != nil {
-			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
+			return nil, fmt.Errorf("searching in batch %d: %w", batch, err)
 		}
 		if res != nil {
 			return &keySearchResult{
@@ -617,7 +616,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	return nil, nil
 }
 
-// Find AbridgedAssertion's seqno/offset by key in the given batch.
+// aaByKeyIn searches for AbridgedAssertion's sequenceNumber/offset by key in the given batch.
 func (ca *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error) {
 	idx, err := ca.indexFor(batch)
 	if err != nil {
@@ -630,30 +629,30 @@ func (ca *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error
 // Issue queued assertions into new batch.
 //
 // Drops batches that fall outside of storage window.
-func (h *Handle) Issue() error {
-	if h.closed {
+func (ca *Handle) Issue() error {
+	if ca.closed {
 		return ErrClosed
 	}
 
 	dt := time.Now()
-	err := h.issue(dt)
+	err := ca.issue(dt)
 	if err != nil {
 		return err
 	}
-	err = h.dropOldBatches(dt)
+	err = ca.dropOldBatches(dt)
 	if err != nil {
-		return fmt.Errorf("Dropping old batches: %w", err)
+		return fmt.Errorf("dropping old batches: %w", err)
 	}
 	return nil
 }
 
-func (h *Handle) issue(dt time.Time) error {
+func (ca *Handle) issue(dt time.Time) error {
 	slog.Info("Starting issuance", "time", dt)
 
-	expectedStored := h.params.StoredBatches(dt)
-	expectedActive := h.params.ActiveBatches(dt)
+	expectedStored := ca.params.StoredBatches(dt)
+	expectedActive := ca.params.ActiveBatches(dt)
 
-	existingBatches, err := h.listBatchRange()
+	existingBatches, err := ca.listBatchRange()
 	if err != nil {
 		return fmt.Errorf("listing existing batches: %w", err)
 	}
@@ -676,7 +675,7 @@ func (h *Handle) issue(dt time.Time) error {
 		//   existing:          [    ]
 		if existingBatches.Begin > expectedStored.Begin {
 			return fmt.Errorf(
-				"Missing batches %d - %d",
+				"missing batches %d - %d",
 				expectedStored.Begin-1,
 				existingBatches.Begin,
 			)
@@ -684,7 +683,7 @@ func (h *Handle) issue(dt time.Time) error {
 
 		if existingBatches.End > expectedStored.End {
 			return fmt.Errorf(
-				"Batches %d and up exist, but should not exist yet",
+				"batches %d and up exist, but should not exist yet",
 				expectedActive.End,
 			)
 		}
@@ -695,7 +694,7 @@ func (h *Handle) issue(dt time.Time) error {
 	if toCreate.Len() == 0 {
 		slog.Info(fmt.Sprintf(
 			"No batches were ready to issue. Next batch ready in %s.",
-			h.params.NextBatchAt(dt).Sub(dt).Truncate(time.Second),
+			ca.params.NextBatchAt(dt).Sub(dt).Truncate(time.Second),
 		))
 		return nil
 	}
@@ -703,7 +702,7 @@ func (h *Handle) issue(dt time.Time) error {
 	slog.Info("To issue", "batches", toCreate)
 
 	for batch := toCreate.Begin; batch < toCreate.End; batch++ {
-		err := h.issueBatch(batch, batch < toCreate.End-1)
+		err := ca.issueBatch(batch, batch < toCreate.End-1)
 		if err != nil {
 			return fmt.Errorf("issuing %d: %w", batch, err)
 		}
@@ -717,37 +716,37 @@ func (h *Handle) issue(dt time.Time) error {
 // Assumes this is the first batch, or the previous batch exists already.
 //
 // If empty is true, issues an empty batch. Otherwise, drain the queue.
-func (h *Handle) issueBatch(number uint32, empty bool) error {
+func (ca *Handle) issueBatch(number uint32, empty bool) error {
 	deleteDir1 := true
 
-	// We perform issuance twice, and compare results.
-	dir1, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch1-%d-*", number))
+	// We perform issuance twice and compare results.
+	dir1, err := os.MkdirTemp(ca.tmpPath(), fmt.Sprintf("batch1-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
-	dir2, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch2-%d-*", number))
+	dir2, err := os.MkdirTemp(ca.tmpPath(), fmt.Sprintf("batch2-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
 
 	defer func() {
-		os.RemoveAll(dir2)
+		_ = os.RemoveAll(dir2)
 		if deleteDir1 {
-			os.RemoveAll(dir1)
+			_ = os.RemoveAll(dir1)
 		}
 	}()
 
 	batch := mtc.Batch{
 		Number: number,
-		CA:     &h.params,
+		CA:     &ca.params,
 	}
 
-	err = h.issueBatchTo(dir1, batch, empty)
+	err = ca.issueBatchTo(dir1, batch, empty)
 	if err != nil {
 		return err
 	}
 
-	err = h.issueBatchTo(dir2, batch, empty)
+	err = ca.issueBatchTo(dir2, batch, empty)
 	if err != nil {
 		return err
 	}
@@ -764,10 +763,10 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		},
 	)
 
-	h.batchNumbersCache = nil // Invalidate cache of existing batches
+	ca.batchNumbersCache = nil // Invalidate cache of existing batches
 
 	// We're all set: move temporary directory into place
-	err = os.Rename(dir1, h.batchPath(number))
+	err = os.Rename(dir1, ca.batchPath(number))
 	if err != nil {
 		return fmt.Errorf(
 			"renaming: %w",
@@ -778,23 +777,23 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 	deleteDir1 = false
 
 	if !empty {
-		err = h.dropQueue()
+		err = ca.dropQueue()
 		if err != nil {
-			return fmt.Errorf("Emptying queue: %w", err)
+			return fmt.Errorf("emptying queue: %w", err)
 		}
 	}
 
-	err = h.updateLatest(number)
+	err = ca.updateLatest(number)
 	if err != nil {
-		return fmt.Errorf("Updating latest symlink: %w", err)
+		return fmt.Errorf("updating latest symlink: %w", err)
 	}
 
 	return nil
 }
 
 // Updates the latest symlink to point to the given batch
-func (h *Handle) updateLatest(number uint32) error {
-	dir, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("symlink-%d-*", number))
+func (ca *Handle) updateLatest(number uint32) error {
+	dir, err := os.MkdirTemp(ca.tmpPath(), fmt.Sprintf("symlink-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
@@ -808,7 +807,7 @@ func (h *Handle) updateLatest(number uint32) error {
 		return err
 	}
 
-	err = os.Rename(newLatest, h.latestBatchPath())
+	err = os.Rename(newLatest, ca.latestBatchPath())
 	if err != nil {
 		return err
 	}
@@ -862,17 +861,17 @@ func sha256File(path string) ([]byte, error) {
 
 // Like issueBatch, but don't write out to the correct directory yet.
 // Instead, write to dir. Also, don't empty the queue.
-func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
+func (ca *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	// First fetch previous tree heads
 	var prevHeads []byte
 
 	if batch.Number == 0 {
-		prevHeads = h.params.PreEpochRoots()
+		prevHeads = ca.params.PreEpochRoots()
 	} else {
-		w, err := h.getSignedValidityWindow(batch.Number - 1)
+		w, err := ca.getSignedValidityWindow(batch.Number - 1)
 		if err != nil {
 			return fmt.Errorf(
-				"Loading SignedValidityWindow of batch %d: %w",
+				"loading SignedValidityWindow of batch %d: %w",
 				batch.Number-1,
 				err,
 			)
@@ -891,17 +890,17 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	aasBW := bufio.NewWriter(aasW)
 
 	if !empty {
-		err = h.WalkQueue(func(qa QueuedAssertion) error {
+		err = ca.WalkQueue(func(qa QueuedAssertion) error {
 			aa := qa.Assertion.Abridge()
 			buf, err := aa.MarshalBinary()
 			if err != nil {
-				return fmt.Errorf("Marshalling assertion %x: %w", qa.Checksum, err)
+				return fmt.Errorf("marshalling assertion %x: %w", qa.Checksum, err)
 			}
 
 			_, err = aasBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
-					"Writing assertion %x to %s: %w",
+					"writing assertion %x to %s: %w",
 					qa.Checksum,
 					aasPath,
 					err,
@@ -943,7 +942,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	defer treeW.Close()
 
-	err = tree.WriteTo(treeW)
+	_, err = tree.WriteTo(treeW)
 	if err != nil {
 		return fmt.Errorf("writing out %s: %w", treePath, err)
 	}
@@ -973,7 +972,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Sign validity window
-	w, err := batch.SignValidityWindow(h.signer, prevHeads, tree.Root())
+	w, err := batch.SignValidityWindow(ca.signer, prevHeads, tree.Root())
 	if err != nil {
 		return fmt.Errorf("signing ValidityWindow: %w", err)
 	}
@@ -991,7 +990,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	return nil
 }
 
-// New creates a new Merkle Tree CA, and opens it.
+// New creates a new Merkle TreeHandle CA, and opens it.
 //
 // Call Handle.Close() when done.
 func New(path string, opts NewOpts) (*Handle, error) {
@@ -1018,10 +1017,10 @@ func New(path string, opts NewOpts) (*Handle, error) {
 		return nil, errors.New("BatchDuration has to be strictly positive")
 	}
 	if opts.Lifetime < opts.BatchDuration {
-		return nil, errors.New("Lifetime has to be larger than BatchDuration")
+		return nil, errors.New("lifetime has to be larger than BatchDuration")
 	}
 	if opts.Lifetime.Nanoseconds()%opts.BatchDuration.Nanoseconds() != 0 {
-		return nil, errors.New("Lifetime has to be a multiple of BatchDuration")
+		return nil, errors.New("lifetime has to be a multiple of BatchDuration")
 	}
 	if opts.StorageDuration.Nanoseconds()%opts.BatchDuration.Nanoseconds() != 0 {
 		return nil, errors.New("StorageDuration has to be a multiple of BatchDuration")
@@ -1053,7 +1052,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 		return nil, err
 	}
 
-	// Write out. First, create directory if it doesn't exist
+	// Write out. First, create the directory if it doesn't exist
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		err = os.MkdirAll(path, 0o755)
@@ -1073,11 +1072,11 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	unlock := true
 	defer func() {
 		if unlock {
-			h.flock.Unlock()
+			_ = h.flock.Unlock()
 		}
 	}()
 
-	// Write out signing key
+	// Write out the signing key
 	if err := os.WriteFile(h.skPath(), signer.Bytes(), 0o400); err != nil {
 		return nil, fmt.Errorf("writing %s: %w", h.skPath(), err)
 	}
@@ -1097,15 +1096,15 @@ func New(path string, opts NewOpts) (*Handle, error) {
 
 	// Queue
 	if err := os.WriteFile(h.queuePath(), []byte{}, 0o644); err != nil {
-		return nil, fmt.Errorf("Writing %s: %w", h.queuePath(), err)
+		return nil, fmt.Errorf("writing %s: %w", h.queuePath(), err)
 	}
 
 	paramsBuf, err := h.params.MarshalBinary()
 	if err != nil {
-		return nil, fmt.Errorf("Marshalling params: %w", err)
+		return nil, fmt.Errorf("marshalling params: %w", err)
 	}
 	if err := os.WriteFile(h.paramsPath(), paramsBuf, 0o644); err != nil {
-		return nil, fmt.Errorf("Writing %s: %w", h.paramsPath(), err)
+		return nil, fmt.Errorf("writing %s: %w", h.paramsPath(), err)
 	}
 
 	unlock = false

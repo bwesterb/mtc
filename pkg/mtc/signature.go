@@ -14,7 +14,7 @@ import (
 	dil5 "github.com/cloudflare/circl/sign/dilithium/mode5"
 )
 
-// Signing public key with specific hash and options.
+// Verifier represents a signing public key with specific hash and options.
 type Verifier interface {
 	Verify(message, signature []byte) error
 	Scheme() SignatureScheme
@@ -101,7 +101,7 @@ func signatureSchemeToHash(scheme SignatureScheme) (crypto.Hash, error) {
 	case TLSEd25519, TLSDilitihium5r3:
 		return 0, nil
 	}
-	return 0, errors.New("Unsupported SignatureScheme")
+	return 0, errors.New("unsupported SignatureScheme")
 }
 
 func signatureSchemeToCurve(scheme SignatureScheme) elliptic.Curve {
@@ -127,34 +127,34 @@ func NewVerifier(scheme SignatureScheme, pk crypto.PublicKey) (
 	case TLSPSSWithSHA256, TLSPSSWithSHA384, TLSPSSWithSHA512:
 		rpk, ok := pk.(*rsa.PublicKey)
 		if !ok {
-			return nil, errors.New("Expected *rsa.PublicKey")
+			return nil, errors.New("expected *rsa.PublicKey")
 		}
 		return &pssVerifier{hash: h, pk: rpk, scheme: scheme}, nil
 
 	case TLSEd25519:
 		epk, ok := pk.(ed25519.PublicKey)
 		if !ok || len(epk) != ed25519.PublicKeySize {
-			return nil, errors.New("Expected ed25519.PublicKey")
+			return nil, errors.New("expected ed25519.PublicKey")
 		}
 		return ed25519Verifier(epk), nil
 	case TLSECDSAWithP256AndSHA256, TLSECDSAWithP384AndSHA384, TLSECDSAWithP521AndSHA512:
 		epk, ok := pk.(*ecdsa.PublicKey)
 		if !ok {
-			return nil, errors.New("Expected *ecdsa.PublicKey")
+			return nil, errors.New("expected *ecdsa.PublicKey")
 		}
 		curve := signatureSchemeToCurve(scheme)
 		if curve != epk.Curve {
-			return nil, fmt.Errorf("Expected curve %v, got %v", curve, epk.Curve)
+			return nil, fmt.Errorf("expected curve %v, got %v", curve, epk.Curve)
 		}
 		return &ecdsaVerifier{hash: h, pk: epk, scheme: scheme}, nil
 	case TLSDilitihium5r3:
 		dpk, ok := pk.(*dil5.PublicKey)
 		if !ok {
-			return nil, errors.New("Expected github.com/cloudflare/circl/sign/dilithium/mode5.*PublicKey")
+			return nil, errors.New("expected github.com/cloudflare/circl/sign/dilithium/mode5.*PublicKey")
 		}
 		return (*dil5Verifier)(dpk), nil
 	default:
-		return nil, errors.New("Unsupported SignatureScheme")
+		return nil, errors.New("unsupported SignatureScheme")
 	}
 }
 
@@ -174,7 +174,7 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 		return &pssVerifier{hash: h, pk: pk, scheme: scheme}, nil
 	case TLSEd25519:
 		if len(data) != ed25519.PublicKeySize {
-			return nil, errors.New("Wrong length for ed25519 public key")
+			return nil, errors.New("wrong length for ed25519 public key")
 		}
 		ret := make([]byte, ed25519.PublicKeySize)
 		copy(ret, data)
@@ -183,7 +183,7 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 		curve := signatureSchemeToCurve(scheme)
 		x, y := elliptic.Unmarshal(curve, data)
 		if x == nil {
-			return nil, errors.New("Failed to unmarshal ecdsa public key")
+			return nil, errors.New("failed to unmarshal ecdsa public key")
 		}
 		return &ecdsaVerifier{
 			hash: h,
@@ -200,17 +200,17 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 			pk  dil5.PublicKey
 		)
 		if len(data) != dil5.PublicKeySize {
-			return nil, errors.New("Wrong length for dilithium5 public key")
+			return nil, errors.New("wrong length for dilithium5 public key")
 		}
 		copy(buf[:], data)
 		pk.Unpack(&buf)
 		return (*dil5Verifier)(&pk), nil
 	default:
-		return nil, errors.New("Unsupported SignatureScheme")
+		return nil, errors.New("unsupported SignatureScheme")
 	}
 }
 
-// Signing private key with specific hash and options.
+// Signer private key with specific hash and options.
 type Signer interface {
 	Sign(message []byte) []byte
 	Scheme() SignatureScheme
@@ -245,13 +245,13 @@ func UnmarshalSigner(scheme SignatureScheme, data []byte) (
 			sk  dil5.PrivateKey
 		)
 		if len(data) != dil5.PrivateKeySize {
-			return nil, errors.New("Wrong length for dilithium5 private key")
+			return nil, errors.New("wrong length for dilithium5 private key")
 		}
 		copy(buf[:], data)
 		sk.Unpack(&buf)
 		return (*dil5Signer)(&sk), nil
 	default:
-		return nil, errors.New("Unsupported SignatureScheme")
+		return nil, errors.New("unsupported SignatureScheme")
 	}
 }
 
@@ -269,7 +269,7 @@ func GenerateSigningKeypair(scheme SignatureScheme) (Signer, Verifier, error) {
 		}
 		return (*dil5Signer)(sk), (*dil5Verifier)(pk), nil
 	default:
-		return nil, nil, errors.New("Unsupported SignatureScheme")
+		return nil, nil, errors.New("unsupported SignatureScheme")
 	}
 }
 
@@ -317,7 +317,7 @@ func SignatureSchemeFromString(s string) SignatureScheme {
 	return 0
 }
 
-// Returns valid signature schemes for given public key
+// SignatureSchemesFor returns valid signature schemes for given public key
 func SignatureSchemesFor(pk crypto.PublicKey) []SignatureScheme {
 	switch pk := pk.(type) {
 	case *rsa.PublicKey:
@@ -344,7 +344,7 @@ func SignatureSchemesFor(pk crypto.PublicKey) []SignatureScheme {
 	return []SignatureScheme{}
 }
 
-// Returns [scheme]:[sha256]
+// VerifierFingerprint returns [scheme]:[sha256]
 func VerifierFingerprint(v Verifier) string {
 	buf := v.Bytes()
 	h := sha256.Sum256(buf)

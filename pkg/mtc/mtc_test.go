@@ -38,17 +38,17 @@ func hexdump(data []byte) string {
 	for i := 0; i < len(data); i += 32 {
 		for j := 0; j < 32; j += 4 {
 			if j != 0 {
-				fmt.Fprintf(buf, " ")
+				_, _ = fmt.Fprintf(buf, " ")
 			}
 			for k := 0; k < 4; k++ {
 				if i+j+k >= len(data) {
-					fmt.Fprintf(buf, "  ")
+					_, _ = fmt.Fprintf(buf, "  ")
 				} else {
-					fmt.Fprintf(buf, "%02x", data[i+j+k])
+					_, _ = fmt.Fprintf(buf, "%02x", data[i+j+k])
 				}
 			}
 		}
-		fmt.Fprintf(buf, "\n")
+		_, _ = fmt.Fprintf(buf, "\n")
 	}
 
 	return buf.String()
@@ -58,8 +58,8 @@ func createEd25519TestTLSSubject() (*TLSSubject, error) {
 	var seed [ed25519.SeedSize]byte
 
 	h := sha3.NewShake128()
-	h.Write([]byte("MTC Example"))
-	h.Read(seed[:])
+	_, _ = h.Write([]byte("MTC Example"))
+	_, _ = h.Read(seed[:])
 
 	privEd := ed25519.NewKeyFromSeed(seed[:])
 	pubEd := privEd.Public()
@@ -259,19 +259,19 @@ func TestDraftExampleAssertion(t *testing.T) {
 
 func TestClaimsParsing(t *testing.T) {
 	for _, tc := range []Claims{
-		Claims{
+		{
 			DNS: []string{"example.com"},
 		},
-		Claims{
+		{
 			DNSWildcard: []string{"example.com"},
 		},
-		Claims{
+		{
 			IPv4: []net.IP{net.ParseIP("192.0.2.37")},
 		},
-		Claims{
+		{
 			IPv6: []net.IP{net.ParseIP("::1")},
 		},
-		Claims{
+		{
 			DNS: []string{
 				"example.com",
 				"b.example.com",
@@ -344,10 +344,10 @@ func TestTAIParsing(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ hex, errString string }{
-		{"00", "Input truncated"},
-		{"01", "Input truncated"},
+		{"00", "input truncated"},
+		{"01", "input truncated"},
 		{"028001", "TrustAnchorIdentifier: not normalized; starts with 0x80"},
-		{"010001", "Unexpected extra (internal) bytes"},
+		{"010001", "unexpected extra (internal) bytes"},
 		{"05ff81818101", "TrustAnchorIdentifier: overflow of sub-identifier 0"},
 		{"0181", "TrustAnchorIdentifier: ends on continuation"},
 	} {

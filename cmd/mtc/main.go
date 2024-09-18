@@ -2,8 +2,8 @@ package main
 
 import (
 	"errors"
-	"github.com/bwesterb/mtc"
-	"github.com/bwesterb/mtc/ca"
+	"github.com/bwesterb/mtc/pkg/ca"
+	"github.com/bwesterb/mtc/pkg/mtc"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
 
@@ -22,7 +22,7 @@ import (
 
 var (
 	errNoCaParams = errors.New("missing ca-params flag")
-	errArgs       = errors.New("Wrong number of arguments")
+	errArgs       = errors.New("wrong number of arguments")
 	fCpuProfile   *os.File
 )
 
@@ -126,7 +126,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 	if cc.String("checksum") != "" {
 		checksum, err = hex.DecodeString(cc.String("checksum"))
 		if err != nil {
-			fmt.Errorf("Parsing checksum: %w", err)
+			return nil, fmt.Errorf("parsing checksum: %w", err)
 		}
 	}
 
@@ -151,7 +151,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		} {
 			if cc.IsSet(flag) {
 				return nil, fmt.Errorf(
-					"Can't specify --in-file and --%s together",
+					"can't specify --in-file and --%s together",
 					flag,
 				)
 			}
@@ -190,7 +190,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		cc.String("tls-der") == "") ||
 		(cc.String("tls-pem") != "" &&
 			cc.String("tls-der") != "") {
-		return nil, errors.New("Expect either tls-pem or tls-der flag")
+		return nil, errors.New("expect either tls-pem or tls-der flag")
 	}
 
 	usingPem := false
@@ -206,7 +206,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 	}
 
 	if usingPem {
-		block, _ := pem.Decode([]byte(subjectBuf))
+		block, _ := pem.Decode(subjectBuf)
 		if block == nil {
 			return nil, fmt.Errorf(
 				"reading subject %s: failed to parse PEM block",
@@ -218,25 +218,25 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 
 	pub, err := x509.ParsePKIXPublicKey(subjectBuf)
 	if err != nil {
-		return nil, fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
+		return nil, fmt.Errorf("parsing subject %s: %w", subjectPath, err)
 	}
 
 	var scheme mtc.SignatureScheme
 	if cc.String("tls-scheme") != "" {
 		scheme = mtc.SignatureSchemeFromString(cc.String("tls-scheme"))
 		if scheme == 0 {
-			return nil, fmt.Errorf("Unknown TLS signature scheme: %s", scheme)
+			return nil, fmt.Errorf("unknown TLS signature scheme: %s", scheme)
 		}
 	} else {
 		schemes := mtc.SignatureSchemesFor(pub)
 		if len(schemes) == 0 {
 			return nil, fmt.Errorf(
-				"No matching signature scheme for that public key",
+				"no matching signature scheme for that public key",
 			)
 		}
 		if len(schemes) >= 2 {
 			return nil, fmt.Errorf(
-				"Specify --tls-scheme with one of %s",
+				"specify --tls-scheme with one of %s",
 				schemes,
 			)
 		}
@@ -304,7 +304,7 @@ func handleNewAssertion(cc *cli.Context) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "checksum: %x\n", qa.Checksum)
+	_, _ = fmt.Fprintf(os.Stderr, "checksum: %x\n", qa.Checksum)
 
 	return nil
 }
@@ -363,27 +363,27 @@ func handleCaShowQueue(cc *cli.Context) error {
 		cs := a.Claims
 		subj := a.Subject
 		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-		fmt.Fprintf(w, "checksum\t%x\n", qa.Checksum)
-		fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+		_, _ = fmt.Fprintf(w, "checksum\t%x\n", qa.Checksum)
+		_, _ = fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 		switch subj := subj.(type) {
 		case *mtc.TLSSubject:
 			asubj := subj.Abridge().(*mtc.AbridgedTLSSubject)
-			fmt.Fprintf(w, "signature_scheme\t%s\n", asubj.SignatureScheme)
-			fmt.Fprintf(w, "public_key_hash\t%x\n", asubj.PublicKeyHash[:])
+			_, _ = fmt.Fprintf(w, "signature_scheme\t%s\n", asubj.SignatureScheme)
+			_, _ = fmt.Fprintf(w, "public_key_hash\t%x\n", asubj.PublicKeyHash[:])
 		}
 		if len(cs.DNS) != 0 {
-			fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+			_, _ = fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
 		}
 		if len(cs.DNSWildcard) != 0 {
-			fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+			_, _ = fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
 		}
 		if len(cs.IPv4) != 0 {
-			fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
+			_, _ = fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
 		}
 		if len(cs.IPv6) != 0 {
-			fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+			_, _ = fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 		}
-		w.Flush()
+		_ = w.Flush()
 		fmt.Printf("\n")
 		return nil
 	})
@@ -396,7 +396,7 @@ func handleCaShowQueue(cc *cli.Context) error {
 
 func handleCaNew(cc *cli.Context) error {
 	if cc.Args().Len() != 2 {
-		cli.ShowSubcommandHelp(cc)
+		_ = cli.ShowSubcommandHelp(cc)
 		return errArgs
 	}
 
@@ -421,7 +421,7 @@ func handleCaNew(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	h.Close()
+	_ = h.Close()
 	return nil
 }
 
@@ -488,10 +488,10 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "signature\t✅\n")
-	fmt.Fprintf(w, "batch_number\t%d\n", sw.ValidityWindow.BatchNumber)
+	_, _ = fmt.Fprintf(w, "signature\t✅\n")
+	_, _ = fmt.Fprintf(w, "batch_number\t%d\n", sw.ValidityWindow.BatchNumber)
 	for i := 0; i < int(p.ValidityWindowSize); i++ {
-		fmt.Fprintf(
+		_, _ = fmt.Fprintf(
 			w,
 			"tree_heads[%d]\t%x\n",
 			int(sw.ValidityWindow.BatchNumber)+i-int(p.ValidityWindowSize)+1,
@@ -499,7 +499,7 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 		)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 
@@ -546,10 +546,10 @@ func handleInspectTree(cc *cli.Context) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "number of leaves\t%d\n", t.LeafCount())
-	fmt.Fprintf(w, "number of nodes\t%d\n", t.NodeCount())
-	fmt.Fprintf(w, "root\t%x\n", t.Root())
-	w.Flush()
+	_, _ = fmt.Fprintf(w, "number of leaves\t%d\n", t.LeafCount())
+	_, _ = fmt.Fprintf(w, "number of nodes\t%d\n", t.NodeCount())
+	_, _ = fmt.Fprintf(w, "root\t%x\n", t.Root())
+	_ = w.Flush()
 	return nil
 }
 
@@ -557,23 +557,23 @@ func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
 	aa := a.Abridge()
 	cs := aa.Claims
 	subj := aa.Subject
-	fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+	_, _ = fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 	switch subj := subj.(type) {
 	case *mtc.AbridgedTLSSubject:
-		fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
-		fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
+		_, _ = fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
+		_, _ = fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
 	}
 	if len(cs.DNS) != 0 {
-		fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+		_, _ = fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
 	}
 	if len(cs.DNSWildcard) != 0 {
-		fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+		_, _ = fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
 	}
 	if len(cs.IPv4) != 0 {
-		fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
+		_, _ = fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
 	}
 	if len(cs.IPv6) != 0 {
-		fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+		_, _ = fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 	}
 }
 
@@ -598,16 +598,16 @@ func handleInspectCert(cc *cli.Context) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	writeAssertion(w, c.Assertion)
-	fmt.Fprintf(w, "\n")
+	_, _ = fmt.Fprintf(w, "\n")
 	tai := c.Proof.TrustAnchorIdentifier()
-	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType(&caStore))
+	_, _ = fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType(&caStore))
 
-	fmt.Fprintf(w, "CA OID\t%s\n", tai.Issuer)
-	fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
+	_, _ = fmt.Fprintf(w, "CA OID\t%s\n", &tai.Issuer)
+	_, _ = fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
 
 	switch proof := c.Proof.(type) {
 	case *mtc.MerkleTreeProof:
-		fmt.Fprintf(w, "index\t%d\n", proof.Index())
+		_, _ = fmt.Fprintf(w, "index\t%d\n", proof.Index())
 	}
 
 	switch proof := c.Proof.(type) {
@@ -635,16 +635,16 @@ func handleInspectCert(cc *cli.Context) error {
 			return fmt.Errorf("computing root: %w", err)
 		}
 
-		fmt.Fprintf(w, "recomputed root\t%x\n", root)
+		_, _ = fmt.Fprintf(w, "recomputed root\t%x\n", root)
 
-		w.Flush()
+		_ = w.Flush()
 		fmt.Printf("authentication path\n")
 		for i := 0; i < len(path)/mtc.HashLen; i++ {
 			fmt.Printf(" %x\n", path[i*mtc.HashLen:(i+1)*mtc.HashLen])
 		}
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 
@@ -662,7 +662,7 @@ func handleInspectAssertion(cc *cli.Context) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	writeAssertion(w, a)
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 
@@ -681,28 +681,28 @@ func handleInspectAbridgedAssertions(cc *cli.Context) error {
 			cs := aa.Claims
 			subj := aa.Subject
 			var key [mtc.HashLen]byte
-			aa.Key(key[:])
+			_ = aa.Key(key[:])
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-			fmt.Fprintf(w, "key\t%x\n", key)
-			fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
+			_, _ = fmt.Fprintf(w, "key\t%x\n", key)
+			_, _ = fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 			switch subj := subj.(type) {
 			case *mtc.AbridgedTLSSubject:
-				fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
-				fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
+				_, _ = fmt.Fprintf(w, "signature_scheme\t%s\n", subj.SignatureScheme)
+				_, _ = fmt.Fprintf(w, "public_key_hash\t%x\n", subj.PublicKeyHash[:])
 			}
 			if len(cs.DNS) != 0 {
-				fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
+				_, _ = fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
 			}
 			if len(cs.DNSWildcard) != 0 {
-				fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
+				_, _ = fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
 			}
 			if len(cs.IPv4) != 0 {
-				fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
+				_, _ = fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
 			}
 			if len(cs.IPv6) != 0 {
-				fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+				_, _ = fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 			}
-			w.Flush()
+			_ = w.Flush()
 			fmt.Printf("\n")
 			return nil
 		},
@@ -725,23 +725,23 @@ func handleInspectCaParams(cc *cli.Context) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "issuer\t%s\n", p.Issuer)
-	fmt.Fprintf(w, "start_time\t%d\t%s\n", p.StartTime,
+	_, _ = fmt.Fprintf(w, "issuer\t%s\n", &p.Issuer)
+	_, _ = fmt.Fprintf(w, "start_time\t%d\t%s\n", p.StartTime,
 		time.Unix(int64(p.StartTime), 0))
-	fmt.Fprintf(w, "batch_duration\t%d\t%s\n", p.BatchDuration,
+	_, _ = fmt.Fprintf(w, "batch_duration\t%d\t%s\n", p.BatchDuration,
 		time.Second*time.Duration(p.BatchDuration))
-	fmt.Fprintf(w, "life_time\t%d\t%s\n", p.Lifetime,
+	_, _ = fmt.Fprintf(w, "life_time\t%d\t%s\n", p.Lifetime,
 		time.Second*time.Duration(p.Lifetime))
-	fmt.Fprintf(w, "storage_window_size\t%d\t%s\n", p.StorageWindowSize,
+	_, _ = fmt.Fprintf(w, "storage_window_size\t%d\t%s\n", p.StorageWindowSize,
 		time.Second*time.Duration(p.BatchDuration*p.StorageWindowSize))
-	fmt.Fprintf(w, "validity_window_size\t%d\n", p.ValidityWindowSize)
-	fmt.Fprintf(w, "http_server\t%s\n", p.HttpServer)
-	fmt.Fprintf(
+	_, _ = fmt.Fprintf(w, "validity_window_size\t%d\n", p.ValidityWindowSize)
+	_, _ = fmt.Fprintf(w, "http_server\t%s\n", p.HttpServer)
+	_, _ = fmt.Fprintf(
 		w,
 		"public_key fingerprint\t%s\n",
 		mtc.VerifierFingerprint(p.PublicKey),
 	)
-	w.Flush()
+	_ = w.Flush()
 	return nil
 }
 
@@ -912,7 +912,7 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("create(%s): %w", path, err)
 				}
-				pprof.StartCPUProfile(fCpuProfile)
+				_ = pprof.StartCPUProfile(fCpuProfile)
 			}
 			return nil
 		},
@@ -925,7 +925,7 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		if err != errArgs {
+		if !errors.Is(err, errArgs) {
 			fmt.Printf("error: %v\n", err.Error())
 		}
 		os.Exit(1)

@@ -1,9 +1,9 @@
 package mtc
 
 import (
+	"errors"
 	"golang.org/x/crypto/cryptobyte"
 
-	"errors"
 	"io"
 	"reflect"
 )
@@ -11,11 +11,11 @@ import (
 var (
 	// ErrTruncated is a parsing error returned when the input seems to have
 	// been truncated.
-	ErrTruncated = errors.New("Input truncated")
+	ErrTruncated = errors.New("input truncated")
 
 	// ErrExtraBytes is a parsing error returned when there are extraneous
 	// bytes at the end of, or within, the data.
-	ErrExtraBytes = errors.New("Unexpected extra (internal) bytes")
+	ErrExtraBytes = errors.New("unexpected extra (internal) bytes")
 )
 
 type unmarshaler interface {
@@ -58,7 +58,7 @@ func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
 			continue
 		}
 
-		if err != ErrTruncated {
+		if !errors.Is(err, ErrTruncated) {
 			return err
 		}
 
@@ -71,7 +71,7 @@ func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
 			// it's still in front.
 			if len(buf) > maxSize {
 				// This shouldn't be possible, but let's error gracefully.
-				return errors.New("Unexpected ErrTruncated")
+				return errors.New("unexpected ErrTruncated")
 			}
 
 			buf = append(buf, make([]byte, len(buf))...)
@@ -84,7 +84,7 @@ func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
 		if n == 0 {
 			return err
 		}
-		s = cryptobyte.String(buf[:len(oldS)+n])
+		s = buf[:len(oldS)+n]
 	}
 	return nil
 }

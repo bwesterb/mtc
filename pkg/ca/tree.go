@@ -4,21 +4,21 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/bwesterb/mtc"
+	"github.com/bwesterb/mtc/pkg/mtc"
 	"golang.org/x/exp/mmap"
 
 	"golang.org/x/crypto/cryptobyte"
 )
 
-// Handle to a batches tree file. In contrast to mtc.Tree, this doesn't
-// load the whole tree in memory.
-type Tree struct {
+// TreeHandle is a handle to a batches tree file.
+// In contrast to mtc.Tree, this doesn't load the whole tree in memory.
+type TreeHandle struct {
 	r       *mmap.ReaderAt
 	nLeaves uint64
 }
 
-// Opens an index
-func OpenTree(path string) (*Tree, error) {
+// OpenTree opens an index
+func OpenTree(path string) (*TreeHandle, error) {
 	var nLeaves uint64
 
 	r, err := mmap.Open(path)
@@ -41,21 +41,21 @@ func OpenTree(path string) (*Tree, error) {
 		return nil, fmt.Errorf("%s: incorrect filesize", path)
 	}
 
-	return &Tree{
+	return &TreeHandle{
 		r:       r,
 		nLeaves: nLeaves,
 	}, nil
 }
 
-func (h *Tree) Close() error {
-	return h.r.Close()
+func (t *TreeHandle) Close() error {
+	return t.r.Close()
 }
 
-// Return authentication path proving that the leaf at the given index
+// AuthenticationPath returns an authentication path proving that the leaf at the given index
 // is included in the Merkle tree.
-func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
+func (t *TreeHandle) AuthenticationPath(index uint64) ([]byte, error) {
 	if index >= t.nLeaves {
-		return nil, fmt.Errorf("Tree index out of range %d", index)
+		return nil, fmt.Errorf("tree index out of range %d", index)
 	}
 
 	var buf [mtc.HashLen]byte
