@@ -326,6 +326,9 @@ func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
 	b.AddBytes(buf)
 
 	buf, err = c.Proof.TrustAnchorIdentifier().MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal TAI: %w", err)
+	}
 	b.AddBytes(buf)
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(c.Proof.Info())
@@ -616,7 +619,7 @@ func (p *CAParams) newTreeHeads(prevHeads, root []byte) ([]byte, error) {
 			len(root),
 		)
 	}
-	return append(prevHeads[HashLen:len(prevHeads)], root...), nil
+	return append(prevHeads[HashLen:], root...), nil
 }
 
 func (batch *Batch) Anchor() TrustAnchorIdentifier {
@@ -989,7 +992,7 @@ func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
 		level++
 		index >>= 1
 
-		batch.hashNode(h, left, right, index, level)
+		_ = batch.hashNode(h, left, right, index, level)
 	}
 
 	if index != 0 {
@@ -1630,7 +1633,7 @@ func (oid *RelativeOID) Equal(rhs *RelativeOID) bool {
 }
 
 func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
-	if tai.Issuer == nil || len(tai.Issuer) == 0 {
+	if len(tai.Issuer) == 0 {
 		return nil, errors.New("can't marshal uninitialized TrustAnchorIdentifier")
 	}
 	batch := RelativeOID{}

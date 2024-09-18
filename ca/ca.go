@@ -763,6 +763,9 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 			"index",
 		},
 	)
+	if err != nil {
+		return err
+	}
 
 	h.batchNumbersCache = nil // Invalidate cache of existing batches
 
@@ -1073,7 +1076,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	unlock := true
 	defer func() {
 		if unlock {
-			h.flock.Unlock()
+			_ = h.flock.Unlock()
 		}
 	}()
 

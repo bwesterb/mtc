@@ -396,7 +396,10 @@ func handleCaShowQueue(cc *cli.Context) error {
 
 func handleCaNew(cc *cli.Context) error {
 	if cc.Args().Len() != 2 {
-		cli.ShowSubcommandHelp(cc)
+		err := cli.ShowSubcommandHelp(cc)
+		if err != nil {
+			return err
+		}
 		return errArgs
 	}
 
@@ -912,7 +915,10 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("create(%s): %w", path, err)
 				}
-				pprof.StartCPUProfile(fCpuProfile)
+				err = pprof.StartCPUProfile(fCpuProfile)
+				if err != nil {
+					return fmt.Errorf("StartCPUProfile: %w", err)
+				}
 			}
 			return nil
 		},

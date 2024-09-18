@@ -59,7 +59,7 @@ func createEd25519TestTLSSubject() (*TLSSubject, error) {
 
 	h := sha3.NewShake128()
 	h.Write([]byte("MTC Example"))
-	h.Read(seed[:])
+	_, _ = h.Read(seed[:])
 
 	privEd := ed25519.NewKeyFromSeed(seed[:])
 	pubEd := privEd.Public()

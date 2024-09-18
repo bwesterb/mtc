@@ -151,8 +151,6 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 			return nil, nil
 		}
 	}
-
-	return nil, nil
 }
 
 type indexEntry struct {
