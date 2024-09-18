@@ -426,9 +426,11 @@ func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(p.Issuer)
-	})
+	var issuer, err = p.Issuer.MarashalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(issuer)
 	b.AddUint16(uint16(p.PublicKey.Scheme()))
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(p.PublicKey.Bytes())
@@ -584,9 +586,11 @@ func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
 
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(ca.Issuer)
-	})
+	var issuer, err = ca.Issuer.MarashalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(issuer)
 	buf, err := w.MarshalBinary()
 	if err != nil {
 		return nil, err
@@ -1018,9 +1022,11 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 	var b cryptobyte.Builder
 
 	b.AddUint8(1)
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(batch.CA.Issuer)
-	})
+	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	if err != nil {
+		return nil
+	}
+	b.AddBytes(issuer)
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
 	b.AddUint8(level)
@@ -1041,9 +1047,11 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 func (batch *Batch) hashEmpty(out []byte, index uint64, level uint8) error {
 	var b cryptobyte.Builder
 	b.AddUint8(0)
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(batch.CA.Issuer)
-	})
+	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	if err != nil {
+		return err
+	}
+	b.AddBytes(issuer)
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
 	b.AddUint8(level)
@@ -1133,9 +1141,11 @@ func (a *AbridgedAssertion) Key(out []byte) error {
 func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
 	var b cryptobyte.Builder
 	b.AddUint8(2)
-	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes(batch.CA.Issuer)
-	})
+	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	if err != nil {
+		return nil
+	}
+	b.AddBytes(issuer)
 	b.AddUint32(batch.Number)
 	b.AddUint64(index)
 	buf, err := a.MarshalBinary()
@@ -1592,6 +1602,33 @@ func (oid *RelativeOID) UnmarshalText(text []byte) error {
 	return nil
 }
 
+func (oid RelativeOID) MarashalBinary() ([]byte, error) {
+	if len(oid) == 0 {
+		return nil, errors.New("can't marshal uninitialized RelativeOID")
+	}
+
+	var b cryptobyte.Builder
+	b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(oid)
+	})
+	return b.Bytes()
+}
+
+func (oid *RelativeOID) Equal(rhs *RelativeOID) bool {
+	if rhs == nil {
+		return false
+	}
+	if len(*oid) == len(*rhs) {
+		for i, v := range *oid {
+			if v != (*rhs)[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
 	if tai.Issuer == nil || len(tai.Issuer) == 0 {
 		return nil, errors.New("can't marshal uninitialized TrustAnchorIdentifier")
@@ -1645,19 +1682,4 @@ func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
 	}
 	tai.Issuer = oid
 	return nil
-}
-
-func (oid *RelativeOID) Equal(rhs *RelativeOID) bool {
-	if rhs == nil {
-		return false
-	}
-	if len(*oid) == len(*rhs) {
-		for i, v := range *oid {
-			if v != (*rhs)[i] {
-				return false
-			}
-		}
-		return true
-	}
-	return false
 }
