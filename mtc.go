@@ -1025,12 +1025,14 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 	var b cryptobyte.Builder
 
 	b.AddUint8(1)
-	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	tai, err := TrustAnchorIdentifier{
+		Issuer:      batch.CA.Issuer,
+		BatchNumber: batch.Number,
+	}.MarshalBinary()
 	if err != nil {
-		return nil
+		return err
 	}
-	b.AddBytes(issuer)
-	b.AddUint32(batch.Number)
+	b.AddBytes(tai)
 	b.AddUint64(index)
 	b.AddUint8(level)
 	b.AddBytes(left)
@@ -1050,12 +1052,14 @@ func (batch *Batch) hashNode(out, left, right []byte, index uint64,
 func (batch *Batch) hashEmpty(out []byte, index uint64, level uint8) error {
 	var b cryptobyte.Builder
 	b.AddUint8(0)
-	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	tai, err := TrustAnchorIdentifier{
+		Issuer:      batch.CA.Issuer,
+		BatchNumber: batch.Number,
+	}.MarshalBinary()
 	if err != nil {
 		return err
 	}
-	b.AddBytes(issuer)
-	b.AddUint32(batch.Number)
+	b.AddBytes(tai)
 	b.AddUint64(index)
 	b.AddUint8(level)
 	buf, err := b.Bytes()
@@ -1144,12 +1148,14 @@ func (a *AbridgedAssertion) Key(out []byte) error {
 func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
 	var b cryptobyte.Builder
 	b.AddUint8(2)
-	var issuer, err = batch.CA.Issuer.MarashalBinary()
+	tai, err := TrustAnchorIdentifier{
+		Issuer:      batch.CA.Issuer,
+		BatchNumber: batch.Number,
+	}.MarshalBinary()
 	if err != nil {
-		return nil
+		return err
 	}
-	b.AddBytes(issuer)
-	b.AddUint32(batch.Number)
+	b.AddBytes(tai)
 	b.AddUint64(index)
 	buf, err := a.MarshalBinary()
 	if err != nil {
