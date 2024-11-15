@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 
-	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa87"
 )
 
 // Signing public key with specific hash and options.
@@ -81,7 +81,7 @@ func (v *mldsaVerifier) Bytes() []byte {
 	(*mldsa.PublicKey)(v).Pack(&ret)
 	return ret[:]
 }
-func (v *mldsaVerifier) Scheme() SignatureScheme { return TLSMLDSA44 }
+func (v *mldsaVerifier) Scheme() SignatureScheme { return TLSMLDSA87 }
 func (v *mldsaVerifier) Verify(msg, sig []byte) error {
 	if mldsa.Verify((*mldsa.PublicKey)(v), msg, nil, sig) {
 		return nil
@@ -98,7 +98,7 @@ func signatureSchemeToHash(scheme SignatureScheme) (crypto.Hash, error) {
 		return crypto.SHA384, nil
 	case TLSPSSWithSHA512, TLSECDSAWithP521AndSHA512:
 		return crypto.SHA512, nil
-	case TLSEd25519, TLSMLDSA44:
+	case TLSEd25519, TLSMLDSA87:
 		return 0, nil
 	}
 	return 0, errors.New("Unsupported SignatureScheme")
@@ -147,10 +147,10 @@ func NewVerifier(scheme SignatureScheme, pk crypto.PublicKey) (
 			return nil, fmt.Errorf("Expected curve %v, got %v", curve, epk.Curve)
 		}
 		return &ecdsaVerifier{hash: h, pk: epk, scheme: scheme}, nil
-	case TLSMLDSA44:
+	case TLSMLDSA87:
 		dpk, ok := pk.(*mldsa.PublicKey)
 		if !ok {
-			return nil, errors.New("Expected github.com/cloudflare/circl/sign/dilithium/mode5.*PublicKey")
+			return nil, errors.New("Expected *mldsa.PublicKey")
 		}
 		return (*mldsaVerifier)(dpk), nil
 	default:
@@ -194,13 +194,13 @@ func UnmarshalVerifier(scheme SignatureScheme, data []byte) (
 			},
 			scheme: scheme,
 		}, nil
-	case TLSMLDSA44:
+	case TLSMLDSA87:
 		var (
 			buf [mldsa.PublicKeySize]byte
 			pk  mldsa.PublicKey
 		)
 		if len(data) != mldsa.PublicKeySize {
-			return nil, errors.New("Wrong length for ML-DSA-44 public key")
+			return nil, errors.New("Wrong length for ML-DSA-87 public key")
 		}
 		copy(buf[:], data)
 		pk.Unpack(&buf)
@@ -224,7 +224,7 @@ func (s *mldsaSigner) Bytes() []byte {
 	(*mldsa.PrivateKey)(s).Pack(&ret)
 	return ret[:]
 }
-func (s *mldsaSigner) Scheme() SignatureScheme { return TLSMLDSA44 }
+func (s *mldsaSigner) Scheme() SignatureScheme { return TLSMLDSA87 }
 func (s *mldsaSigner) Sign(msg []byte) []byte {
 	var sig [mldsa.SignatureSize]byte
 	err := mldsa.SignTo((*mldsa.PrivateKey)(s), msg, nil, false, sig[:])
@@ -242,7 +242,7 @@ func UnmarshalSigner(scheme SignatureScheme, data []byte) (
 	}
 
 	switch scheme {
-	case TLSMLDSA44:
+	case TLSMLDSA87:
 		var (
 			buf [mldsa.PrivateKeySize]byte
 			sk  mldsa.PrivateKey
@@ -265,7 +265,7 @@ func GenerateSigningKeypair(scheme SignatureScheme) (Signer, Verifier, error) {
 	}
 
 	switch scheme {
-	case TLSMLDSA44:
+	case TLSMLDSA87:
 		pk, sk, err := mldsa.GenerateKey(nil)
 		if err != nil {
 			return nil, nil, err
@@ -292,8 +292,8 @@ func (s SignatureScheme) String() string {
 		return "p521"
 	case TLSEd25519:
 		return "ed25519"
-	case TLSMLDSA44:
-		return "ml-dsa-44"
+	case TLSMLDSA87:
+		return "ml-dsa-87"
 	}
 	return fmt.Sprintf("unknown:%d", uint16(s))
 }
@@ -312,8 +312,8 @@ func SignatureSchemeFromString(s string) SignatureScheme {
 		return TLSECDSAWithP384AndSHA384
 	case "p521":
 		return TLSECDSAWithP521AndSHA512
-	case "ml-dsa-44":
-		return TLSMLDSA44
+	case "ml-dsa-87":
+		return TLSMLDSA87
 	case "ed25519":
 		return TLSEd25519
 	}
@@ -342,7 +342,7 @@ func SignatureSchemesFor(pk crypto.PublicKey) []SignatureScheme {
 	case ed25519.PublicKey:
 		return []SignatureScheme{TLSEd25519}
 	case *mldsa.PublicKey:
-		return []SignatureScheme{TLSMLDSA44}
+		return []SignatureScheme{TLSMLDSA87}
 	}
 	return []SignatureScheme{}
 }
