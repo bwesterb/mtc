@@ -112,10 +112,10 @@ const (
 	TLSECDSAWithP521AndSHA512 SignatureScheme = 0x0603
 	TLSEd25519                SignatureScheme = 0x0807
 
-	// Just for testing we use round 3 Dilithium5 with a codepoint in the
-	// private use region. For production SPHINCS⁺-128s would be a better
-	// choice.
-	TLSDilitihium5r3 SignatureScheme = 0xfe3c
+	// Just for testing we use ML-DSA44 with a codepoint in the
+	// private use region.
+	// For production SLH-DSA-128s would be a better choice.
+	TLSMLDSA44 SignatureScheme = 0xfe3c
 )
 
 type AbridgedTLSSubject struct {
