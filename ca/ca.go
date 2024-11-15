@@ -1040,7 +1040,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	h.params.Issuer = opts.Issuer
 
 	if opts.SignatureScheme == 0 {
-		opts.SignatureScheme = mtc.TLSDilitihium5r3
+		opts.SignatureScheme = mtc.TLSMLDSA87
 	}
 
 	// Generate keypair
