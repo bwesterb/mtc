@@ -259,19 +259,19 @@ func TestDraftExampleAssertion(t *testing.T) {
 
 func TestClaimsParsing(t *testing.T) {
 	for _, tc := range []Claims{
-		Claims{
+		{
 			DNS: []string{"example.com"},
 		},
-		Claims{
+		{
 			DNSWildcard: []string{"example.com"},
 		},
-		Claims{
+		{
 			IPv4: []net.IP{net.ParseIP("192.0.2.37")},
 		},
-		Claims{
+		{
 			IPv6: []net.IP{net.ParseIP("::1")},
 		},
-		Claims{
+		{
 			DNS: []string{
 				"example.com",
 				"b.example.com",
