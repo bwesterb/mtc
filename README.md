@@ -386,19 +386,14 @@ authentication path
 
 This is indeed the root of the `0`th batch, and so this certificate is valid.
 
-### Spin up an HTTP server with `mtcd`
+### Run CA server
 
-Run an HTTP server in the background to serve static files, accept queue
-requests, periodically issue new batches of certificate, and serve issued
-certificates.
-
-```
-$ go install github.com/bwesterb/mtc/cmd/mtcd@v0.1.2
-```
+Run an HTTP server to serve static files, accept queue requests, periodically
+issue new batches of certificate, and serve issued certificates.
 
 Start the server.
 ```
-$ mtcd --listen-addr 8080 --ca-path .
+$ mtc ca --ca-path . serve --listen-addr localhost:8080
 ```
 
 Get and inspect CA parameters.

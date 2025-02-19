@@ -395,6 +395,21 @@ func handleCaShowQueue(cc *cli.Context) error {
 	return nil
 }
 
+func handleCaServe(cc *cli.Context) error {
+	path := cc.String("ca-path")
+	listenAddr := cc.String("listen-addr")
+	if listenAddr == "" {
+		h, err := ca.Open(path)
+		if err != nil {
+			return err
+		}
+		listenAddr = h.Params().HttpServer
+		h.Close()
+	}
+	s := NewServer(path, listenAddr)
+	return s.Serve()
+}
+
 func handleCaNew(cc *cli.Context) error {
 	if cc.Args().Len() != 2 {
 		err := cli.ShowSubcommandHelp(cc)
@@ -838,6 +853,17 @@ func main() {
 								Aliases: []string{"o"},
 							},
 						),
+					},
+					{
+						Name:   "serve",
+						Usage:  "start CA server",
+						Action: handleCaServe,
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "listen-addr",
+								Usage: "Address for the server to listen on, in the form 'host:port'",
+							},
+						},
 					},
 				},
 			},
