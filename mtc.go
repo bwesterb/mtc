@@ -426,7 +426,7 @@ func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
-	var issuer, err = p.Issuer.MarashalBinary()
+	var issuer, err = p.Issuer.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +586,7 @@ func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
 
-	var issuer, err = ca.Issuer.MarashalBinary()
+	var issuer, err = ca.Issuer.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
@@ -1608,7 +1608,7 @@ func (oid *RelativeOID) UnmarshalText(text []byte) error {
 	return nil
 }
 
-func (oid RelativeOID) MarashalBinary() ([]byte, error) {
+func (oid RelativeOID) MarshalBinary() ([]byte, error) {
 	if len(oid) == 0 {
 		return nil, errors.New("can't marshal uninitialized RelativeOID")
 	}

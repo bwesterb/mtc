@@ -42,7 +42,7 @@ for improvement.
 To play around with MTC, you can install the `mtc` commandline tool:
 
 ```
-$ go install github.com/bwesterb/mtc/cmd/mtc@v0.1.1
+$ go install github.com/bwesterb/mtc/cmd/mtc@v0.1.2
 ```
 
 ### Assertions
@@ -386,3 +386,54 @@ authentication path
 
 This is indeed the root of the `0`th batch, and so this certificate is valid.
 
+### Spin up an HTTP server with `mtcd`
+
+Run an HTTP server in the background to serve static files, accept queue
+requests, periodically issue new batches of certificate, and serve issued
+certificates.
+
+```
+$ go install github.com/bwesterb/mtc/cmd/mtcd@v0.1.2
+```
+
+Start the server.
+```
+$ mtcd --listen-addr 8080 --ca-path .
+```
+
+Get and inspect CA parameters.
+```
+$ curl -X GET "http://localhost:8080/static/mtc/v1/ca-params" -o ca-params
+$ mtc inspect ca-params ca-params
+issuer         123.4.5
+start_time       1739593848 2025-02-14 23:30:48 -0500 EST
+batch_duration     300    5m0s
+life_time       3600    1h0m0s
+storage_window_size  24     2h0m0s
+validity_window_size  12
+http_server      localhost:8080
+public_key fingerprint ml-dsa-87:be1903a366b462b7b4e0010120d4b38279bbf4e350559b95e93671dbc4b821fc
+```
+
+Queue up the assertion created in above.
+```
+$ curl -X POST "http://localhost:8080/ca/queue" --data-binary "@my-assertion" -w "%{http_code}"
+200
+```
+
+Wait 5 minutes for the next batch and retrieve the certificate from the CA server.
+```
+$ curl -X POST "http://localhost:8080/ca/cert" --data-binary "@my-assertion" -o my-cert
+$ mtc inspect -ca-params ca-params cert my-cert
+subject_type   TLS
+signature_scheme p256
+public_key_hash f3ee2efd8bc3dd01ab924d12ee0bc5661866a4b147fcdc6881b5455c9084c973
+dns       [example.com]
+ip4       [198.51.100.60]
+proof_type   merkle_tree_sha256
+CA OID     123.4.5
+Batch number  991
+index      0
+recomputed root 27a893fa1f864f97b2c2073f784bfd6bbcd1b2deb3d8aafbdd18b09ac10bc430
+authentication path
+```
