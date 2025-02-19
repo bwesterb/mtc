@@ -648,7 +648,7 @@ func (h *Handle) Issue() error {
 }
 
 func (h *Handle) issue(dt time.Time) error {
-	slog.Info("Starting issuance", "time", dt)
+	slog.Info("Starting issuance", "time", dt.UTC())
 
 	expectedStored := h.params.StoredBatches(dt)
 	expectedActive := h.params.ActiveBatches(dt)

@@ -2,48 +2,37 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
-	gopath "path"
 	"syscall"
 	"time"
 
-	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
 	"github.com/bwesterb/mtc/http"
 	"golang.org/x/sync/errgroup"
 )
 
-func main() {
-	var path, listenAddr string
+type Server struct {
+	path       string
+	listenAddr string
+}
 
-	flag.StringVar(&path, "ca-path", ".", "the path to the CA state. Defaults to the current directory.")
-	flag.StringVar(&listenAddr, "listen-addr", "", "the TCP address for the server to listen on, in the form 'host:port'.")
-	flag.Parse()
-
-	if listenAddr == "" {
-		var p mtc.CAParams
-		buf, err := os.ReadFile(gopath.Join(path, "www", "mtc", "v1", "ca-params"))
-		if err != nil {
-			slog.Error("failed to read ca-params", slog.Any("err", err))
-			os.Exit(1)
-		}
-		if err := p.UnmarshalBinary(buf); err != nil {
-			slog.Error("failed to unmarshal ca-params", slog.Any("err", err))
-			os.Exit(1)
-		}
-		listenAddr = p.HttpServer
+func NewServer(path, listenAddr string) *Server {
+	return &Server{
+		path:       path,
+		listenAddr: listenAddr,
 	}
+}
 
+func (s *Server) Serve() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGQUIT, syscall.SIGTERM)
 	defer cancel()
 
-	srv := http.NewServer(path, listenAddr)
+	slog.Info("Starting server", slog.Any("listenAddr", s.listenAddr))
 
-	slog.Info("starting mtcd")
+	srv := http.NewServer(s.path, s.listenAddr)
 
 	g, ctx := errgroup.WithContext(ctx)
 
@@ -64,25 +53,20 @@ func main() {
 	})
 
 	g.Go(func() error {
-		h, err := ca.Open(path)
-		if err != nil {
-			slog.Error("could not start issuance loop", slog.Any("err", err))
-			return nil
-		}
-		h.Close()
-		if err := issue(path, ctx); err != nil {
+		if err := issuanceLoop(s.path, ctx); err != nil {
 			return fmt.Errorf("could not start issuance loop: %w", err)
 		}
 		return nil
 	})
 
 	if err := g.Wait(); err != nil {
-		slog.Info("unexpected errgroup error, exiting", slog.Any("err", err))
-		os.Exit(1)
+		return fmt.Errorf("unexpected errgroup error: %w", err)
 	}
+
+	return nil
 }
 
-func issue(path string, ctx context.Context) error {
+func issuanceLoop(path string, ctx context.Context) error {
 	h, err := ca.Open(path)
 	if err != nil {
 		return err
@@ -97,7 +81,7 @@ func issue(path string, ctx context.Context) error {
 		batchTime := params.NextBatchAt(time.Now())
 		now := time.Now()
 		if batchTime.After(now) {
-			slog.Info("Sleeping until next batch", slog.Any("at", batchTime.UTC()))
+			slog.Info("Sleeping until next batch is ready to issue", slog.Any("at", batchTime.UTC()))
 			select {
 			case <-ctx.Done():
 				return nil
