@@ -256,22 +256,19 @@ type Tree struct {
 }
 
 // Write the tree to w
-func (t *Tree) WriteTo(w io.Writer) error {
+func (t *Tree) WriteTo(w io.Writer) (int64, error) {
 	var b cryptobyte.Builder
 	b.AddUint64(t.nLeaves)
 	buf, err := b.Bytes()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, err = w.Write(buf)
+	n1, err := w.Write(buf)
 	if err != nil {
-		return err
+		return int64(n1), err
 	}
-	_, err = w.Write(t.buf)
-	if err != nil {
-		return err
-	}
-	return nil
+	n2, err := w.Write(t.buf)
+	return int64(n1 + n2), err
 }
 
 func (t *Tree) NodeCount() uint {
@@ -429,7 +426,7 @@ func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 func (p *CAParams) MarshalBinary() ([]byte, error) {
 	// TODO add struct to I-D
 	var b cryptobyte.Builder
-	var issuer, err = p.Issuer.MarashalBinary()
+	var issuer, err = p.Issuer.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +586,7 @@ func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddBytes([]byte("Merkle Tree Crts ValidityWindow\000"))
 
-	var issuer, err = ca.Issuer.MarashalBinary()
+	var issuer, err = ca.Issuer.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
@@ -1611,7 +1608,7 @@ func (oid *RelativeOID) UnmarshalText(text []byte) error {
 	return nil
 }
 
-func (oid RelativeOID) MarashalBinary() ([]byte, error) {
+func (oid RelativeOID) MarshalBinary() ([]byte, error) {
 	if len(oid) == 0 {
 		return nil, errors.New("can't marshal uninitialized RelativeOID")
 	}

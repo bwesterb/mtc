@@ -946,7 +946,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	defer treeW.Close()
 
-	err = tree.WriteTo(treeW)
+	_, err = tree.WriteTo(treeW)
 	if err != nil {
 		return fmt.Errorf("writing out %s: %w", treePath, err)
 	}

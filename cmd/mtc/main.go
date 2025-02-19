@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
 	"github.com/urfave/cli/v2"
@@ -126,7 +127,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 	if cc.String("checksum") != "" {
 		checksum, err = hex.DecodeString(cc.String("checksum"))
 		if err != nil {
-			fmt.Errorf("Parsing checksum: %w", err)
+			return nil, fmt.Errorf("parsing checksum: %w", err)
 		}
 	}
 
