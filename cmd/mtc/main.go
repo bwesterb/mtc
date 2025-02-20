@@ -94,13 +94,13 @@ func assertionFlags(inFile bool) []cli.Flag {
 			Name:     "from-x509-pem",
 			Category: "Assertion",
 			Aliases:  []string{"x"},
-			Usage:    "Suggest assertion from X509 PEM encoded certificate (chain)",
+			Usage:    "Suggest assertion from X.509 PEM encoded certificate (chain)",
 		},
 		&cli.StringFlag{
 			Name:     "from-x509-server",
 			Category: "Assertion",
 			Aliases:  []string{"X"},
-			Usage:    "Suggest assertion for TLS server with existing X509 chain",
+			Usage:    "Suggest assertion for TLS server with existing X.509 chain",
 		},
 	}
 	if inFile {
@@ -281,7 +281,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 	}
 	if subjectFlagCount != 1 {
 		return nil, errors.New(
-			"Expect exactly one of tls-pem, tls-der, from-x509-server," +
+			"expect exactly one of tls-pem, tls-der, from-x509-server," +
 				" or from-x509-pem flags",
 		)
 	}
@@ -312,19 +312,19 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 
 		pub, err := x509.ParsePKIXPublicKey(subjectBuf)
 		if err != nil {
-			return nil, fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
+			return nil, fmt.Errorf("parsing subject %s: %w", subjectPath, err)
 		}
 
 		if !cc.IsSet("tls-scheme") {
 			schemes := mtc.SignatureSchemesFor(pub)
 			if len(schemes) == 0 {
 				return nil, fmt.Errorf(
-					"No matching signature scheme for that public key",
+					"no matching signature scheme for that public key",
 				)
 			}
 			if len(schemes) >= 2 {
 				return nil, fmt.Errorf(
-					"Specify --tls-scheme with one of %s",
+					"specify --tls-scheme with one of %s",
 					schemes,
 				)
 			}
