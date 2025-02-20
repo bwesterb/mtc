@@ -5,6 +5,7 @@ import (
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
+	"github.com/bwesterb/mtc/umbilical"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
 
@@ -88,6 +89,19 @@ func assertionFlags(inFile bool) []cli.Flag {
 			Category: "Assertion",
 			Usage:    "Only proceed if assertion matches checksum",
 		},
+
+		&cli.StringFlag{
+			Name:     "from-x509-pem",
+			Category: "Assertion",
+			Aliases:  []string{"x"},
+			Usage:    "Suggest assertion from X.509 PEM encoded certificate (chain)",
+		},
+		&cli.StringFlag{
+			Name:     "from-x509-server",
+			Category: "Assertion",
+			Aliases:  []string{"X"},
+			Usage:    "Suggest assertion for TLS server with existing X.509 chain",
+		},
 	}
 	if inFile {
 		ret = append(
@@ -149,6 +163,8 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 			"ip6",
 			"tls-der",
 			"tls-pem",
+			"from-x509-server",
+			"from-x509-pem",
 		} {
 			if cc.IsSet(flag) {
 				return nil, fmt.Errorf(
@@ -174,84 +190,153 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		}, nil
 	}
 
-	cs := mtc.Claims{
-		DNS:         cc.StringSlice("dns"),
-		DNSWildcard: cc.StringSlice("dns-wildcard"),
-	}
+	var (
+		a      mtc.Assertion
+		scheme mtc.SignatureScheme
+	)
 
-	for _, ip := range cc.StringSlice("ip4") {
-		cs.IPv4 = append(cs.IPv4, net.ParseIP(ip))
-	}
-
-	for _, ip := range cc.StringSlice("ip6") {
-		cs.IPv6 = append(cs.IPv6, net.ParseIP(ip))
-	}
-
-	if (cc.String("tls-pem") == "" &&
-		cc.String("tls-der") == "") ||
-		(cc.String("tls-pem") != "" &&
-			cc.String("tls-der") != "") {
-		return nil, errors.New("Expect either tls-pem or tls-der flag")
-	}
-
-	usingPem := false
-	subjectPath := cc.String("tls-der")
-	if cc.String("tls-pem") != "" {
-		usingPem = true
-		subjectPath = cc.String("tls-pem")
-	}
-
-	subjectBuf, err := os.ReadFile(subjectPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading subject %s: %w", subjectPath, err)
-	}
-
-	if usingPem {
-		block, _ := pem.Decode([]byte(subjectBuf))
-		if block == nil {
-			return nil, fmt.Errorf(
-				"reading subject %s: failed to parse PEM block",
-				subjectPath,
-			)
-		}
-		subjectBuf = block.Bytes
-	}
-
-	pub, err := x509.ParsePKIXPublicKey(subjectBuf)
-	if err != nil {
-		return nil, fmt.Errorf("Parsing subject %s: %w", subjectPath, err)
-	}
-
-	var scheme mtc.SignatureScheme
-	if cc.String("tls-scheme") != "" {
+	if cc.IsSet("tls-scheme") {
 		scheme = mtc.SignatureSchemeFromString(cc.String("tls-scheme"))
 		if scheme == 0 {
 			return nil, fmt.Errorf("Unknown TLS signature scheme: %s", scheme)
 		}
-	} else {
-		schemes := mtc.SignatureSchemesFor(pub)
-		if len(schemes) == 0 {
-			return nil, fmt.Errorf(
-				"No matching signature scheme for that public key",
-			)
-		}
-		if len(schemes) >= 2 {
-			return nil, fmt.Errorf(
-				"Specify --tls-scheme with one of %s",
-				schemes,
-			)
-		}
-		scheme = schemes[0]
 	}
 
-	subj, err := mtc.NewTLSSubject(scheme, pub)
-	if err != nil {
-		return nil, fmt.Errorf("creating subject: %w", err)
+	if cc.IsSet("from-x509-pem") || cc.IsSet("from-x509-server") {
+		var certs []*x509.Certificate
+
+		if cc.IsSet("from-x509-server") {
+			tlsAddr := cc.String("from-x509-server")
+			certs, err = umbilical.GetChainFromTLSServer(tlsAddr)
+			if err != nil {
+				return nil, fmt.Errorf("from-x509-server: %v", err)
+			}
+		}
+
+		if cc.IsSet("from-x509-pem") {
+			x509Path := cc.String("from-x509-pem")
+			x509Buf, err := os.ReadFile(x509Path)
+			if err != nil {
+				return nil, fmt.Errorf("reading x509 chain %s: %w", x509Path, err)
+			}
+
+			rest := []byte(x509Buf)
+			for i := 0; true; i++ {
+				var block *pem.Block
+				block, rest = pem.Decode(rest)
+				if block == nil {
+					break
+				}
+
+				cert, err := x509.ParseCertificate(block.Bytes)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parsing x509 certificate %d in %s: %s",
+						i, x509Path, err,
+					)
+				}
+
+				certs = append(certs, cert)
+			}
+
+			if len(certs) == 0 {
+				return nil, fmt.Errorf(
+					"reading x509 chain %s: no (PEM encoded) certificates found",
+					x509Path,
+				)
+			}
+		}
+
+		a, err = umbilical.SuggestedAssertionFromX509(certs[0], scheme)
+		if err != nil {
+			return nil, fmt.Errorf("from-x509: %s", err)
+		}
 	}
 
-	a := mtc.Assertion{
-		Claims:  cs,
-		Subject: subj,
+	// Setting any claim will overwrite those suggested by the
+	// X509 certificate.
+	if cc.IsSet("dns") || cc.IsSet("dns-wildcard") || cc.IsSet("ip4") ||
+		cc.IsSet("ip6") {
+
+		a.Claims = mtc.Claims{
+			DNS:         cc.StringSlice("dns"),
+			DNSWildcard: cc.StringSlice("dns-wildcard"),
+		}
+
+		for _, ip := range cc.StringSlice("ip4") {
+			a.Claims.IPv4 = append(a.Claims.IPv4, net.ParseIP(ip))
+		}
+
+		for _, ip := range cc.StringSlice("ip6") {
+			a.Claims.IPv6 = append(a.Claims.IPv6, net.ParseIP(ip))
+		}
+	}
+
+	subjectFlagCount := 0
+	for _, flag := range []string{"tls-pem", "tls-der", "from-x509-pem",
+		"from-x509-server"} {
+		if cc.IsSet(flag) {
+			subjectFlagCount++
+		}
+	}
+	if subjectFlagCount != 1 {
+		return nil, errors.New(
+			"expect exactly one of tls-pem, tls-der, from-x509-server," +
+				" or from-x509-pem flags",
+		)
+	}
+
+	if a.Subject == nil {
+		usingPem := false
+		subjectPath := cc.String("tls-der")
+		if cc.String("tls-pem") != "" {
+			usingPem = true
+			subjectPath = cc.String("tls-pem")
+		}
+
+		subjectBuf, err := os.ReadFile(subjectPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading subject %s: %w", subjectPath, err)
+		}
+
+		if usingPem {
+			block, _ := pem.Decode([]byte(subjectBuf))
+			if block == nil {
+				return nil, fmt.Errorf(
+					"reading subject %s: failed to parse PEM block",
+					subjectPath,
+				)
+			}
+			subjectBuf = block.Bytes
+		}
+
+		pub, err := x509.ParsePKIXPublicKey(subjectBuf)
+		if err != nil {
+			return nil, fmt.Errorf("parsing subject %s: %w", subjectPath, err)
+		}
+
+		if !cc.IsSet("tls-scheme") {
+			schemes := mtc.SignatureSchemesFor(pub)
+			if len(schemes) == 0 {
+				return nil, fmt.Errorf(
+					"no matching signature scheme for that public key",
+				)
+			}
+			if len(schemes) >= 2 {
+				return nil, fmt.Errorf(
+					"specify --tls-scheme with one of %s",
+					schemes,
+				)
+			}
+			scheme = schemes[0]
+		}
+
+		subj, err := mtc.NewTLSSubject(scheme, pub)
+		if err != nil {
+			return nil, fmt.Errorf("creating subject: %w", err)
+		}
+
+		a.Subject = subj
 	}
 
 	return &ca.QueuedAssertion{
