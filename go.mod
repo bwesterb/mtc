@@ -10,7 +10,7 @@ require (
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a
 )
 
-require go.etcd.io/bbolt v1.4.0 // indirect
+require go.etcd.io/bbolt v1.4.0
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect

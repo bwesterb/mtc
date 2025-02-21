@@ -16,6 +16,10 @@ var (
 	// ErrExtraBytes is a parsing error returned when there are extraneous
 	// bytes at the end of, or within, the data.
 	ErrExtraBytes = errors.New("Unexpected extra (internal) bytes")
+
+	// ErrChecksumInvalid is an error returned when a checksum does not
+	// match the corresponding data.
+	ErrChecksumInvalid = errors.New("Invalid checksum")
 )
 
 type unmarshaler interface {

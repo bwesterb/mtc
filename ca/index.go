@@ -1,17 +1,18 @@
 package ca
 
-// Functions to work with the batches' index file into abridged-assertions.
+// Functions to work with the batches' index file into abridged-assertions and evidence.
 //
-// The index file consists of 48 byte entries, sorted by key.
+// The index file consists of 56 byte entries, sorted by key.
 //
-//   +--------------+--------------+---------------+
-//   | 32-byte key  | uint64 seqno | uint64 offset |
-//   +--------------+--------------+---------------+
+//   +--------------+--------------+---------------+------------------------+
+//   | 32-byte key  | uint64 seqno | uint64 offset | uint64 evidence_offset |
+//   +--------------+--------------+---------------+------------------------+
 //
 // Each entry corresponds to an AbridgedAssertion. The key is its key,
-// the seqno is the sequence number within the abridged-assertions list, and
-// the offset is the byte-offset in  the abridged-assertions file.
-// offset and seqno are encoded big endian.
+// the seqno is the sequence number within the abridged-assertions list,
+// the offset is the byte-offset in the abridged-assertions file, and
+// the evidence_offset is the byte-offset in the evidence file.
+// offset, evidence_offset, and seqno are encoded big endian.
 //
 // This allows quick lookups by key using interpolation search.
 //
@@ -154,19 +155,21 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 }
 
 type indexEntry struct {
-	key    [mtc.HashLen]byte
-	seqno  uint64
-	offset uint64
+	key            [mtc.HashLen]byte
+	seqno          uint64
+	offset         uint64
+	evidenceOffset uint64
 }
 
-// Reads a stream of AbridgedAssertions from r, and writes the index to w.
-func ComputeIndex(r io.Reader, w io.Writer) error {
+// Reads a streams of AbridgedAssertions Evidence from aaReader and evReader,
+// and writes the index to w.
+func ComputeIndex(aaReader, evReader io.Reader, w io.Writer) error {
 	// First compute keys
 	seqno := uint64(0)
 	entries := []indexEntry{}
 
 	var key [mtc.HashLen]byte
-	err := mtc.UnmarshalAbridgedAssertions(r, func(offset int,
+	err := mtc.UnmarshalAbridgedAssertions(aaReader, func(offset int,
 		aa *mtc.AbridgedAssertion) error {
 		err := aa.Key(key[:])
 		if err != nil {
@@ -177,6 +180,13 @@ func ComputeIndex(r io.Reader, w io.Writer) error {
 			key:    key,
 			offset: uint64(offset),
 		})
+		seqno++
+		return nil
+	})
+
+	seqno = uint64(0)
+	err = mtc.UnmarshalEvidenceEntries(evReader, func(offset int, _ *mtc.Evidence) error {
+		entries[seqno].evidenceOffset = uint64(offset)
 		seqno++
 		return nil
 	})
@@ -204,6 +214,7 @@ func ComputeIndex(r io.Reader, w io.Writer) error {
 		b.AddBytes(entry.key[:])
 		b.AddUint64(entry.seqno)
 		b.AddUint64(entry.offset)
+		b.AddUint64(entry.evidenceOffset)
 		buf, _ := b.Bytes()
 
 		_, err = bw.Write(buf)
