@@ -7,7 +7,7 @@ Implementation of [Merkle Tree Certificates for TLS](
     https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html)
 
 At the moment only the Certification Authority (CA) side is implemented,
-and we differ from `-01` and `master` branch, by including
+and we differ from `-03` and `master` branch, by including
 some [unmerged PRs](https://github.com/davidben/merkle-tree-certs/pulls).
 
 Demo
