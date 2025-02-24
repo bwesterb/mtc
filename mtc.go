@@ -650,6 +650,14 @@ func (batch *Batch) SignValidityWindow(signer Signer, prevHeads []byte,
 	return w, nil
 }
 
+// Returns the closed interval [a,b] in which assertions issued in this batch
+// are valid. That is: for all times x with a ≤ x ≤ b.
+func (batch *Batch) ValidityInterval() (time.Time, time.Time) {
+	start := batch.CA.StartTime + uint64(batch.Number)*batch.CA.BatchDuration
+	end := start + batch.CA.Lifetime - 1
+	return time.Unix(int64(start), 0), time.Unix(int64(end), 999999999)
+}
+
 func NewTLSSubject(scheme SignatureScheme, pk crypto.PublicKey) (*TLSSubject, error) {
 	ver, err := NewVerifier(scheme, pk)
 	if err != nil {
