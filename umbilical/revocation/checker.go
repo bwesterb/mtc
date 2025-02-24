@@ -129,6 +129,7 @@ func (c *Checker) revokedOCSP(cert, issuer *x509.Certificate) (bool, error) {
 		}
 
 		ok = true
+		break
 	}
 
 	if !ok {
