@@ -89,10 +89,11 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 
 // Checks whether the given assertion (to be) issued in the given batch
 // is consistent with the given X.509 certificate chain and
-// trusted roots.
+// trusted roots. The assertion is allowed to cover less than the certificate:
+// eg, only example.com where the certificate covers some.example.com too.
 //
-// We are more strict than is perhaps required. For instance, we do
-// not allow an assertion for some.example.com to be backed
+// On the other hand, we are more strict than is perhaps required. For
+// instance, we do not allow an assertion for some.example.com to be backed
 // by a wildcard certificate for *.example.com.
 // Also we require basically the same chain to be valid for the full
 // duration of the assertion.
@@ -100,8 +101,7 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 // If rc is set, checks whether the certificate is revoked. Does not check
 // revocation of intermediates.
 //
-// If consistent, returns one or more verified chains. This is useful
-// for revocation checks.
+// If consistent, returns one or more verified chains.
 func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
 	chain []*x509.Certificate, roots *x509.CertPool, rc *revocation.Checker) (
 	[][]*x509.Certificate, error) {
@@ -111,7 +111,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
 
 	cert := chain[0]
 
-	// Check if claims match certificate.
+	// Check if the claims are covered by the certificate.
 	for _, ip := range slices.Concat(a.Claims.IPv4, a.Claims.IPv6) {
 		ok := false
 		for _, ip2 := range cert.IPAddresses {
