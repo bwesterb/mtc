@@ -4,6 +4,7 @@ package umbilical
 
 import (
 	"github.com/bwesterb/mtc"
+	"github.com/bwesterb/mtc/umbilical/revocation"
 
 	"bytes"
 	"crypto/tls"
@@ -96,12 +97,13 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 // Also we require basically the same chain to be valid for the full
 // duration of the assertion.
 //
+// If rc is set, checks whether the certificate is revoked. Does not check
+// revocation of intermediates.
+//
 // If consistent, returns one or more verified chains. This is useful
 // for revocation checks.
-//
-// Note: does not perform any revocation check. Also does not check SCTs.
 func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
-	chain []*x509.Certificate, roots *x509.CertPool) (
+	chain []*x509.Certificate, roots *x509.CertPool, rc *revocation.Checker) (
 	[][]*x509.Certificate, error) {
 	if len(chain) == 0 {
 		return nil, errors.New("empty chain")
@@ -210,6 +212,17 @@ func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
 			"Could not find chain valid during lifetime of certificate: %w",
 			errors.Join(errs...),
 		)
+	}
+
+	if rc != nil {
+		revoked, err := rc.Revoked(ret[0][0], ret[0][1])
+		if err != nil {
+			return nil, fmt.Errorf("checking revocation: %w", err)
+		}
+
+		if revoked {
+			return nil, errors.New("certificate is revoked")
+		}
 	}
 
 	return ret, nil
