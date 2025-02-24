@@ -5,10 +5,12 @@ package umbilical
 import (
 	"github.com/bwesterb/mtc"
 
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -82,4 +84,133 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 	}()
 	wg.Wait()
 	return
+}
+
+// Checks whether the given assertion (to be) issued in the given batch
+// is consistent with the given X.509 certificate chain and
+// trusted roots.
+//
+// We are more strict than is perhaps required. For instance, we do
+// not allow an assertion for some.example.com to be backed
+// by a wildcard certificate for *.example.com.
+// Also we require basically the same chain to be valid for the full
+// duration of the assertion.
+//
+// If consistent, returns one or more verified chains. This is useful
+// for revocation checks.
+//
+// Note: does not perform any revocation check. Also does not check SCTs.
+func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
+	chain []*x509.Certificate, roots *x509.CertPool) (
+	[][]*x509.Certificate, error) {
+	if len(chain) == 0 {
+		return nil, errors.New("empty chain")
+	}
+
+	cert := chain[0]
+
+	// Check if claims match certificate.
+	for _, ip := range slices.Concat(a.Claims.IPv4, a.Claims.IPv6) {
+		ok := false
+		for _, ip2 := range cert.IPAddresses {
+			if ip2.Equal(ip) {
+				ok = true
+				break
+			}
+		}
+
+		if !ok {
+			return nil, fmt.Errorf("X.509 certificate not valid for %s", ip)
+		}
+	}
+
+	got := make(map[string]struct{})
+	for _, name := range cert.DNSNames {
+		got[name] = struct{}{}
+	}
+	for _, name := range a.Claims.DNS {
+		if _, ok := got[name]; !ok {
+			return nil, fmt.Errorf(
+				"No exact match for %s in provided X.509 cert",
+				name,
+			)
+		}
+	}
+	for _, name := range a.Claims.DNSWildcard {
+		if _, ok := got["*."+name]; !ok {
+			return nil, fmt.Errorf(
+				"No exact match for *.%s in provided X.509 cert",
+				name,
+			)
+		}
+	}
+
+	if len(a.Claims.Unknown) != 0 {
+		return nil, errors.New("unknown claims")
+	}
+
+	// Check if subjects match.
+	if a.Subject.Type() != mtc.TLSSubjectType {
+		return nil, errors.New("Expected TLSSubjectType")
+	}
+	subjVerifier, err := a.Subject.(*mtc.TLSSubject).Verifier()
+	if err != nil {
+		return nil, fmt.Errorf("Assertion Subject: %w", err)
+	}
+
+	certSubject, err := mtc.NewTLSSubject(subjVerifier.Scheme(), cert.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("NewTLSSubject(X.509 public key): %w", err)
+	}
+	if !bytes.Equal(certSubject.Info(), a.Subject.Info()) {
+		return nil, fmt.Errorf("Subjects don't match")
+	}
+
+	// Verify chain at the start of the batch's validity period
+	start, end := batch.ValidityInterval()
+
+	opts := x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: x509.NewCertPool(),
+		CurrentTime:   start,
+	}
+	for _, cert2 := range chain[1:] {
+		opts.Intermediates.AddCert(cert2)
+	}
+	chains, err := cert.Verify(opts)
+	if err != nil {
+		return nil, fmt.Errorf("X.509 Verify: %w", err)
+	}
+
+	var ret [][]*x509.Certificate
+	var errs []error
+
+	// Verify each chain at the end of the batch's validity period
+	for _, candidateChain := range chains {
+		opts = x509.VerifyOptions{
+			Roots:         x509.NewCertPool(),
+			Intermediates: x509.NewCertPool(),
+			CurrentTime:   end,
+		}
+
+		for _, cert2 := range candidateChain[1 : len(candidateChain)-1] {
+			opts.Intermediates.AddCert(cert2)
+		}
+		opts.Roots.AddCert(candidateChain[len(candidateChain)-1])
+		_, err := cert.Verify(opts)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		ret = append(ret, candidateChain)
+	}
+
+	if len(ret) == 0 {
+		return nil, fmt.Errorf(
+			"Could not find chain valid during lifetime of certificate: %w",
+			errors.Join(errs...),
+		)
+	}
+
+	return ret, nil
 }
