@@ -47,6 +47,7 @@ type Handle struct {
 
 	indices map[uint32]*Index
 	aas     map[uint32]*os.File
+	evs     map[uint32]*os.File
 	trees   map[uint32]*Tree
 
 	batchNumbersCache []uint32 // cache for existing batches
@@ -66,6 +67,10 @@ func (ca *Handle) Close() error {
 	}
 
 	for _, r := range ca.aas {
+		r.Close()
+	}
+
+	for _, r := range ca.evs {
 		r.Close()
 	}
 
@@ -97,7 +102,7 @@ func (h *Handle) dropQueue() error {
 //
 // For each entry, if checksum is not nil, makes sure the assertion
 // matches the checksum
-func (h *Handle) QueueMultiple(it func(yield func(a mtc.AssertionRequest) error) error) error {
+func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error) error) error {
 	if h.closed {
 		return ErrClosed
 	}
@@ -109,8 +114,8 @@ func (h *Handle) QueueMultiple(it func(yield func(a mtc.AssertionRequest) error)
 	defer w.Close()
 	bw := bufio.NewWriter(w)
 
-	if err := it(func(a mtc.AssertionRequest) error {
-		buf, err := a.MarshalBinary()
+	if err := it(func(ar mtc.AssertionRequest) error {
+		buf, err := ar.MarshalBinary()
 		if err != nil {
 			return err
 		}
@@ -140,9 +145,9 @@ func (h *Handle) QueueMultiple(it func(yield func(a mtc.AssertionRequest) error)
 // Queue assertion for publication.
 //
 // If checksum is not nil, makes sure assertion matches the checksum.
-func (h *Handle) Queue(a mtc.AssertionRequest) error {
-	return h.QueueMultiple(func(yield func(a mtc.AssertionRequest) error) error {
-		return yield(a)
+func (h *Handle) Queue(ar mtc.AssertionRequest) error {
+	return h.QueueMultiple(func(yield func(ar mtc.AssertionRequest) error) error {
+		return yield(ar)
 	})
 }
 
@@ -154,6 +159,7 @@ func Open(path string) (*Handle, error) {
 		path:    path,
 		indices: make(map[uint32]*Index),
 		aas:     make(map[uint32]*os.File),
+		evs:     make(map[uint32]*os.File),
 		trees:   make(map[uint32]*Tree),
 	}
 	if err := h.lock(); err != nil {
@@ -207,6 +213,10 @@ func (h Handle) indexPath(number uint32) string {
 
 func (h Handle) aaPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "abridged-assertions")
+}
+
+func (h Handle) evPath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "evidence")
 }
 
 func (h Handle) batchPath(number uint32) string {
@@ -327,7 +337,7 @@ func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
 		var (
 			prefix [2]byte
 			aLen   uint16
-			a      mtc.AssertionRequest
+			ar     mtc.AssertionRequest
 		)
 		_, err := io.ReadFull(br, prefix[:])
 		if err == io.EOF {
@@ -345,12 +355,12 @@ func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
 			return fmt.Errorf("Reading queue: %w", err)
 		}
 
-		err = a.UnmarshalBinary(buf)
+		err = ar.UnmarshalBinary(buf)
 		if err != nil {
 			return fmt.Errorf("Parsing queue: %w", err)
 		}
 
-		err = f(a)
+		err = f(ar)
 		if err != nil {
 			return err
 		}
@@ -416,6 +426,14 @@ func (h *Handle) closeBatch(batch uint32) error {
 		delete(h.aas, batch)
 	}
 
+	if r, ok := h.evs[batch]; ok {
+		err := r.Close()
+		if err != nil {
+			return fmt.Errorf("closing evidence for %d: %w", batch, err)
+		}
+		delete(h.evs, batch)
+	}
+
 	if r, ok := h.trees[batch]; ok {
 		err := r.Close()
 		if err != nil {
@@ -472,10 +490,25 @@ func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
 	return r, nil
 }
 
+// Returns file handle to evidence file for the given batch.
+func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
+	if r, ok := ca.evs[batch]; ok {
+		return r, nil
+	}
+
+	r, err := os.Open(ca.evPath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
 type keySearchResult struct {
 	Batch          uint32
 	SequenceNumber uint64
 	Offset         uint64
+	EvidenceOffset uint64
 }
 
 // Returns the certificate for an issued assertion
@@ -516,7 +549,46 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 	}, nil
 }
 
-// Search for AbridgedAssertions's batch/seqno/offset by key.
+var errShortCircuit = errors.New("short circuit")
+
+// Returns the evidence for an issued assertion
+func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.Evidence, error) {
+	aa := a.Abridge()
+	var key [mtc.HashLen]byte
+	err := aa.Key(key[:])
+	if err != nil {
+		return nil, err
+	}
+	res, err := ca.aaByKey(key[:])
+	if err != nil {
+		return nil, fmt.Errorf("searching by key: %w", err)
+	}
+
+	if res == nil {
+		return nil, fmt.Errorf("no assertion with key %x on record", key)
+	}
+
+	var ev *mtc.Evidence
+	evFile, err := ca.evFileFor(res.Batch)
+	if err != nil {
+		return nil, err
+	}
+	_, err = evFile.Seek(int64(res.EvidenceOffset), 0)
+	if err != nil {
+		return nil, err
+	}
+	err = mtc.UnmarshalEvidenceEntries(evFile, func(_ int, ev2 *mtc.Evidence) error {
+		ev = ev2
+		return errShortCircuit
+	})
+	if err != errShortCircuit {
+		return nil, err
+	}
+
+	return ev, nil
+}
+
+// Search for AbridgedAssertions's batch/seqno/offset/evidence_offset by key.
 func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	batches, err := ca.listBatchRange()
 	if err != nil {
@@ -527,7 +599,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 		return nil, nil
 	}
 
-	for batch := batches.End - 1; batch <= batches.End; batch-- {
+	for batch := batches.End - 1; batch >= batches.Begin && batch <= batches.End; batch-- {
 		res, err := ca.aaByKeyIn(batch, key)
 		if err != nil {
 			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
@@ -537,6 +609,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 				Batch:          batch,
 				SequenceNumber: res.SequenceNumber,
 				Offset:         res.Offset,
+				EvidenceOffset: res.EvidenceOffset,
 			}, nil
 		}
 	}
@@ -830,34 +903,34 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	evBW := bufio.NewWriter(evW)
 
 	if !empty {
-		err = h.WalkQueue(func(a mtc.AssertionRequest) error {
-			aa := a.Assertion.Abridge()
+		err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
+			aa := ar.Assertion.Abridge()
 			buf, err := aa.MarshalBinary()
 			if err != nil {
-				return fmt.Errorf("Marshalling assertion %x: %w", a.Checksum, err)
+				return fmt.Errorf("Marshalling assertion %x: %w", ar.Checksum, err)
 			}
 
 			_, err = aasBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
 					"Writing assertion %x to %s: %w",
-					a.Checksum,
+					ar.Checksum,
 					aasPath,
 					err,
 				)
 			}
 
-			ev := a.Evidence
+			ev := ar.Evidence
 			buf, err = ev.MarshalBinary()
 			if err != nil {
-				return fmt.Errorf("Marshalling evidence %x: %w", a.Checksum, err)
+				return fmt.Errorf("Marshalling evidence %x: %w", ar.Checksum, err)
 			}
 
 			_, err = evBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
 					"Writing evidence %x to %s: %w",
-					a.Checksum,
+					ar.Checksum,
 					evPath,
 					err,
 				)

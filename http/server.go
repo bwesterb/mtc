@@ -45,9 +45,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func assertionFromRequestUnchecked(r *http.Request) (*mtc.AssertionRequest, error) {
-
 	var (
-		a mtc.AssertionRequest
+		ar mtc.AssertionRequest
 	)
 	switch r.Method {
 	case http.MethodPost:
@@ -56,29 +55,28 @@ func assertionFromRequestUnchecked(r *http.Request) (*mtc.AssertionRequest, erro
 			return nil, err
 		}
 		defer r.Body.Close()
-		err = a.UnmarshalBinary(body)
+		err = ar.UnmarshalBinary(body)
 		if err != nil {
 			return nil, err
 		}
+		return &ar, nil
 	default:
 		return nil, fmt.Errorf("unsupported HTTP method: %v", r.Method)
 	}
-
-	return &a, nil
 }
 
 func assertionFromRequest(r *http.Request) (*mtc.AssertionRequest, error) {
-	a, err := assertionFromRequestUnchecked(r)
+	ar, err := assertionFromRequestUnchecked(r)
 	if err != nil {
 		return nil, err
 	}
 
-	err = a.Check()
+	err = ar.Check()
 	if err != nil {
 		return nil, err
 	}
 
-	return a, nil
+	return ar, nil
 }
 
 func handleCaQueue(path string) func(w http.ResponseWriter, r *http.Request) {

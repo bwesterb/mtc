@@ -41,6 +41,7 @@ type Index struct {
 type IndexSearchResult struct {
 	SequenceNumber uint64
 	Offset         uint64
+	EvidenceOffset uint64
 }
 
 // Opens an index
@@ -139,6 +140,7 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 			ss := cryptobyte.String(val[:])
 			ss.ReadUint64(&ret.SequenceNumber)
 			ss.ReadUint64(&ret.Offset)
+			ss.ReadUint64(&ret.EvidenceOffset)
 			return &ret, nil
 		case -1: // tmp < needle
 			a.Set(&tmp)

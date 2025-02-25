@@ -924,21 +924,21 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
-func (a *AssertionRequest) UnmarshalBinary(data []byte) error {
+func (ar *AssertionRequest) UnmarshalBinary(data []byte) error {
 	var (
 		s cryptobyte.String = cryptobyte.String(data)
 	)
-	a.Checksum = make([]byte, sha256.Size)
-	if !s.CopyBytes(a.Checksum) {
+	ar.Checksum = make([]byte, sha256.Size)
+	if !s.CopyBytes(ar.Checksum) {
 		return ErrTruncated
 	}
 
-	err := a.Assertion.unmarshal(&s)
+	err := ar.Assertion.unmarshal(&s)
 	if err != nil {
 		return err
 	}
 
-	err = a.Evidence.unmarshal(&s)
+	err = ar.Evidence.unmarshal(&s)
 	if err != nil {
 		return err
 	}
@@ -947,7 +947,7 @@ func (a *AssertionRequest) UnmarshalBinary(data []byte) error {
 		return ErrExtraBytes
 	}
 
-	err = a.Check()
+	err = ar.Check()
 	if err != nil {
 		return err
 	}
@@ -955,44 +955,51 @@ func (a *AssertionRequest) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (a *AssertionRequest) marshalAndCheckAssertion() ([]byte, error) {
-	buf, err := a.Assertion.MarshalBinary()
+func (ar *AssertionRequest) marshalAndCheckAssertionRequest() ([]byte, error) {
+	var b cryptobyte.Builder
+
+	buf, err := ar.Assertion.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
+	b.AddBytes(buf)
 
-	checksum2 := sha256.Sum256([]byte(buf))
-	if a.Checksum == nil {
-		a.Checksum = checksum2[:]
-	} else if !bytes.Equal(checksum2[:], a.Checksum) {
+	buf, err = ar.Evidence.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(buf)
+
+	checksumBytes, err := b.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	checksum2 := sha256.Sum256(checksumBytes)
+	if ar.Checksum == nil {
+		ar.Checksum = checksum2[:]
+	} else if !bytes.Equal(checksum2[:], ar.Checksum) {
 		return nil, ErrChecksumInvalid
 	}
 
-	return buf, nil
+	return b.Bytes()
 }
 
 // If set, checks whether the Checksum is correct. If not set, sets the
 // Checksum to the correct value.
-func (a *AssertionRequest) Check() error {
+func (ar *AssertionRequest) Check() error {
 	// TODO validate evidence
-	_, err := a.marshalAndCheckAssertion()
+	_, err := ar.marshalAndCheckAssertionRequest()
 	return err
 }
 
-func (a *AssertionRequest) MarshalBinary() ([]byte, error) {
+func (ar *AssertionRequest) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
 
-	buf, err := a.marshalAndCheckAssertion()
+	buf, err := ar.marshalAndCheckAssertionRequest()
 	if err != nil {
 		return nil, err
 	}
-	b.AddBytes(a.Checksum)
-	b.AddBytes(buf)
-
-	buf, err = a.Evidence.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
+	b.AddBytes(ar.Checksum)
 	b.AddBytes(buf)
 
 	return b.Bytes()
