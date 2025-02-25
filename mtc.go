@@ -57,20 +57,22 @@ type Claims struct {
 type EvidenceType uint16
 
 const (
-	EmptyEvidenceType EvidenceType = iota
-	X509ChainEvidenceType
+	X509ChainEvidenceType EvidenceType = iota
 )
 
-type Evidence struct {
-	Type EvidenceType
-	Info EvidenceInfo
+type EvidenceList []Evidence
+
+type Evidence interface {
+	Type() EvidenceType
+	Info() []byte
 }
 
-type EvidenceInfo any
+type X509ChainEvidence []byte
 
-type X509ChainEvidenceInfo []*x509.Certificate
-
-type UnknownEvidenceInfo []byte
+type UnknownEvidence struct {
+	typ  EvidenceType
+	info []byte
+}
 
 // Represents a claim we do not how to interpret.
 type UnknownClaim struct {
@@ -122,7 +124,7 @@ type AbridgedAssertion struct {
 type AssertionRequest struct {
 	Checksum  []byte
 	Assertion Assertion
-	Evidence  Evidence
+	Evidence  EvidenceList
 }
 
 // Copy of tls.SignatureScheme to prevent cycling dependencies
@@ -924,6 +926,22 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
+func (e X509ChainEvidence) Type() EvidenceType { return X509ChainEvidenceType }
+func (e X509ChainEvidence) Info() []byte       { return e }
+func (e X509ChainEvidence) Chain() ([]*x509.Certificate, error) {
+	return x509.ParseCertificates(e)
+}
+func NewX509ChainEvidence(certs []*x509.Certificate) (X509ChainEvidence, error) {
+	var b cryptobyte.Builder
+	for _, cert := range certs {
+		b.AddBytes(cert.Raw)
+	}
+	return b.Bytes()
+}
+
+func (e UnknownEvidence) Type() EvidenceType { return e.typ }
+func (e UnknownEvidence) Info() []byte       { return e.info }
+
 func (ar *AssertionRequest) UnmarshalBinary(data []byte) error {
 	var (
 		s cryptobyte.String = cryptobyte.String(data)
@@ -1595,10 +1613,10 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 	return b.Bytes()
 }
 
-func (e *Evidence) UnmarshalBinary(data []byte) error {
-	*e = Evidence{}
+func (el *EvidenceList) UnmarshalBinary(data []byte) error {
+	*el = EvidenceList{}
 	s := cryptobyte.String(data)
-	err := e.unmarshal(&s)
+	err := el.unmarshal(&s)
 	if err != nil {
 		return err
 	}
@@ -1608,68 +1626,64 @@ func (e *Evidence) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (e *Evidence) unmarshal(s *cryptobyte.String) error {
+func (el *EvidenceList) unmarshal(s *cryptobyte.String) error {
 
 	var (
+		evidenceList cryptobyte.String
 		evidenceInfo cryptobyte.String
 		evidenceType EvidenceType
 	)
 
-	if !s.ReadUint16((*uint16)(&evidenceType)) ||
-		!s.ReadUint24LengthPrefixed(&evidenceInfo) {
+	if !s.ReadUint24LengthPrefixed(&evidenceList) {
 		return ErrTruncated
 	}
-	e.Type = evidenceType
-	switch e.Type {
-	case EmptyEvidenceType:
-		if !evidenceInfo.Empty() {
-			return errors.New("non-empty info for empty evidence")
+
+	for !evidenceList.Empty() {
+		if !evidenceList.ReadUint16((*uint16)(&evidenceType)) ||
+			!evidenceList.ReadUint24LengthPrefixed(&evidenceInfo) {
+			return ErrTruncated
 		}
-	case X509ChainEvidenceType:
-		chain, err := x509.ParseCertificates([]byte(evidenceInfo))
-		if err != nil {
-			return errors.New("failed to parse X.509 chain")
+
+		switch evidenceType {
+		case X509ChainEvidenceType:
+			*el = append(*el, X509ChainEvidence(evidenceInfo))
+		default:
+			*el = append(*el, UnknownEvidence{
+				typ:  evidenceType,
+				info: evidenceInfo,
+			})
 		}
-		e.Info = X509ChainEvidenceInfo(chain)
-	default:
-		unknownInfo := make([]byte, len(evidenceInfo))
-		evidenceInfo.CopyBytes(unknownInfo)
-		e.Info = UnknownEvidenceInfo(unknownInfo)
 	}
 
 	return nil
 }
 
-func (e *Evidence) MarshalBinary() ([]byte, error) {
+func (el *EvidenceList) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
 
-	b.AddUint16(uint16(e.Type))
 	b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
-		switch e.Type {
-		case EmptyEvidenceType:
-		case X509ChainEvidenceType:
-			for _, cert := range e.Info.(X509ChainEvidenceInfo) {
-				b.AddBytes(cert.Raw)
-			}
-		default:
-			b.AddBytes(e.Info.(UnknownEvidenceInfo))
+		for _, e := range *el {
+			b.AddUint16(uint16(e.Type()))
+			b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
+				b.AddBytes(e.Info())
+			})
 		}
 	})
 
 	return b.Bytes()
 }
 
-// Unmarshals Evidence entries from r and calls f for each, with
-// the offset in the stream as first argument, and the Evidence
+// Unmarshals EvidenceLists from r and calls f for each, with
+// the offset in the stream as first argument, and the EvidenceList
 // as second argument.
 //
 // Returns early on error.
-func UnmarshalEvidenceEntries(r io.Reader,
-	f func(int, *Evidence) error) error {
+func UnmarshalEvidenceLists(r io.Reader,
+	f func(int, *EvidenceList) error) error {
 	return unmarshal(r, f)
 }
 
-func (e *Evidence) maxSize() int {
+func (el *EvidenceList) maxSize() int {
 	return (65535+2)*2 + 2
 }
 

@@ -187,7 +187,7 @@ func ComputeIndex(aaReader, evReader io.Reader, w io.Writer) error {
 	})
 
 	seqno = uint64(0)
-	err = mtc.UnmarshalEvidenceEntries(evReader, func(offset int, _ *mtc.Evidence) error {
+	err = mtc.UnmarshalEvidenceLists(evReader, func(offset int, _ *mtc.EvidenceList) error {
 		entries[seqno].evidenceOffset = uint64(offset)
 		seqno++
 		return nil

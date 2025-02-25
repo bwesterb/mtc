@@ -487,6 +487,8 @@ func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
 		return nil, err
 	}
 
+	ca.aas[batch] = r
+
 	return r, nil
 }
 
@@ -501,6 +503,8 @@ func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
 		return nil, err
 	}
 
+	ca.evs[batch] = r
+
 	return r, nil
 }
 
@@ -510,6 +514,8 @@ type keySearchResult struct {
 	Offset         uint64
 	EvidenceOffset uint64
 }
+
+var errShortCircuit = errors.New("short circuit")
 
 // Returns the certificate for an issued assertion
 func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
@@ -526,6 +532,31 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 
 	if res == nil {
 		return nil, fmt.Errorf("no assertion with key %x on record", key)
+	}
+
+	// Double-check that the assertion is present at the expected
+	// offset in the abridged-assertions file.
+	var key2 [mtc.HashLen]byte
+	aaFile, err := ca.aaFileFor(res.Batch)
+	if err != nil {
+		return nil, err
+	}
+	_, err = aaFile.Seek(int64(res.Offset), 0)
+	if err != nil {
+		return nil, err
+	}
+	err = mtc.UnmarshalAbridgedAssertions(aaFile, func(_ int, aa *mtc.AbridgedAssertion) error {
+		err := aa.Key(key2[:])
+		if err != nil {
+			return err
+		}
+		return errShortCircuit
+	})
+	if err != errShortCircuit {
+		return nil, err
+	}
+	if !bytes.Equal(key[:], key2[:]) {
+		return nil, fmt.Errorf("unable to find key %x in abridged-assertions", key)
 	}
 
 	tree, err := ca.treeFor(res.Batch)
@@ -549,10 +580,8 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 	}, nil
 }
 
-var errShortCircuit = errors.New("short circuit")
-
 // Returns the evidence for an issued assertion
-func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.Evidence, error) {
+func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
 	aa := a.Abridge()
 	var key [mtc.HashLen]byte
 	err := aa.Key(key[:])
@@ -568,24 +597,25 @@ func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.Evidence, error) {
 		return nil, fmt.Errorf("no assertion with key %x on record", key)
 	}
 
-	var ev *mtc.Evidence
+	var el *mtc.EvidenceList
 	evFile, err := ca.evFileFor(res.Batch)
 	if err != nil {
 		return nil, err
 	}
+
 	_, err = evFile.Seek(int64(res.EvidenceOffset), 0)
 	if err != nil {
 		return nil, err
 	}
-	err = mtc.UnmarshalEvidenceEntries(evFile, func(_ int, ev2 *mtc.Evidence) error {
-		ev = ev2
+	err = mtc.UnmarshalEvidenceLists(evFile, func(_ int, el2 *mtc.EvidenceList) error {
+		el = el2
 		return errShortCircuit
 	})
 	if err != errShortCircuit {
 		return nil, err
 	}
 
-	return ev, nil
+	return el, nil
 }
 
 // Search for AbridgedAssertions's batch/seqno/offset/evidence_offset by key.
