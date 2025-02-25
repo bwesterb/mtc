@@ -189,7 +189,7 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 
 	var (
 		a      mtc.Assertion
-		e      mtc.Evidence
+		el     mtc.EvidenceList
 		scheme mtc.SignatureScheme
 	)
 
@@ -250,8 +250,11 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 			return nil, fmt.Errorf("from-x509: %s", err)
 		}
 
-		e.Type = mtc.X509ChainEvidenceType
-		e.Info = mtc.X509ChainEvidenceInfo(certs)
+		ev, err := mtc.NewX509ChainEvidence(certs)
+		if err != nil {
+			return nil, err
+		}
+		el = append(el, ev)
 	}
 
 	// Setting any claim will overwrite those suggested by the
@@ -342,7 +345,7 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 
 	return &mtc.AssertionRequest{
 		Assertion: a,
-		Evidence:  e,
+		Evidence:  el,
 		Checksum:  checksum,
 	}, nil
 }
@@ -498,7 +501,10 @@ func handleCaShowQueue(cc *cli.Context) error {
 		if len(cs.IPv6) != 0 {
 			fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 		}
-		writeEvidence(w, ar.Evidence)
+		err = writeEvidenceList(w, ar.Evidence)
+		if err != nil {
+			return err
+		}
 		w.Flush()
 		fmt.Printf("\n")
 		return nil
@@ -712,26 +718,30 @@ func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
 	}
 }
 
-func writeEvidence(w *tabwriter.Writer, e mtc.Evidence) {
+func writeEvidenceList(w *tabwriter.Writer, el mtc.EvidenceList) error {
 
-	fmt.Fprintf(w, "evidence\t")
-	switch e.Type {
-	case mtc.EmptyEvidenceType:
-		fmt.Fprintf(w, "empty\n")
-	case mtc.X509ChainEvidenceType:
-		fmt.Fprintf(w, "x509_chain\n")
-		for i, cert := range e.Info.(mtc.X509ChainEvidenceInfo) {
-			fmt.Fprintf(w, " certificate\t%d\n", i)
-			fmt.Fprintf(w, "  subject\t%s\n", cert.Subject.String())
-			fmt.Fprintf(w, "  issuer\t%s\n", cert.Issuer.String())
-			fmt.Fprintf(w, "  serial_no\t%x\n", cert.SerialNumber)
-			fmt.Fprintf(w, "  not_before\t%s\n", cert.NotBefore)
-			fmt.Fprintf(w, "  not_after\t%s\n", cert.NotAfter)
+	fmt.Fprintf(w, "evidence-list (%d entries)\n", len(el))
+	for _, ev := range el {
+		switch ev.Type() {
+		case mtc.X509ChainEvidenceType:
+			fmt.Fprintf(w, "x509_chain\n")
+			chain, err := ev.(mtc.X509ChainEvidence).Chain()
+			if err != nil {
+				return err
+			}
+			for j, cert := range chain {
+				fmt.Fprintf(w, " certificate\t%d\n", j)
+				fmt.Fprintf(w, "  subject\t%s\n", cert.Subject.String())
+				fmt.Fprintf(w, "  issuer\t%s\n", cert.Issuer.String())
+				fmt.Fprintf(w, "  serial_no\t%x\n", cert.SerialNumber)
+				fmt.Fprintf(w, "  not_before\t%s\n", cert.NotBefore)
+				fmt.Fprintf(w, "  not_after\t%s\n", cert.NotAfter)
+			}
+		default:
+			fmt.Fprintf(w, "unknown type=%d info=%x\n", ev.Type(), ev.Info())
 		}
-	default:
-		fmt.Fprintf(w, "unknown\n")
-		fmt.Fprintf(w, " raw\t%x", e.Info.(mtc.UnknownEvidenceInfo))
 	}
+	return nil
 }
 
 func handleInspectCert(cc *cli.Context) error {
@@ -820,7 +830,10 @@ func handleInspectAssertionRequest(cc *cli.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
 	writeAssertion(w, ar.Assertion)
-	writeEvidence(w, ar.Evidence)
+	err = writeEvidenceList(w, ar.Evidence)
+	if err != nil {
+		return err
+	}
 	w.Flush()
 	return nil
 }
@@ -834,20 +847,21 @@ func handleInspectEvidence(cc *cli.Context) error {
 	defer r.Close()
 
 	count := 0
-	err = mtc.UnmarshalEvidenceEntries(
+	err = mtc.UnmarshalEvidenceLists(
 		bufio.NewReader(r),
-		func(_ int, e *mtc.Evidence) error {
+		func(_ int, el *mtc.EvidenceList) error {
 			count++
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-			writeEvidence(w, *e)
+			writeEvidenceList(w, *el)
 			w.Flush()
+			fmt.Printf("\n")
 			return nil
 		},
 	)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Total number of evidence entries: %d\n", count)
+	fmt.Printf("Total number of evidence lists: %d\n", count)
 	return nil
 }
 

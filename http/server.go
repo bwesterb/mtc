@@ -44,7 +44,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
-func assertionFromRequestUnchecked(r *http.Request) (*mtc.AssertionRequest, error) {
+func assertionRequestFromHTTPUnchecked(r *http.Request) (*mtc.AssertionRequest, error) {
 	var (
 		ar mtc.AssertionRequest
 	)
@@ -65,8 +65,8 @@ func assertionFromRequestUnchecked(r *http.Request) (*mtc.AssertionRequest, erro
 	}
 }
 
-func assertionFromRequest(r *http.Request) (*mtc.AssertionRequest, error) {
-	ar, err := assertionFromRequestUnchecked(r)
+func assertionRequestFromHTTP(r *http.Request) (*mtc.AssertionRequest, error) {
+	ar, err := assertionRequestFromHTTPUnchecked(r)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func handleCaQueue(path string) func(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer h.Close()
-		a, err := assertionFromRequest(r)
+		a, err := assertionRequestFromHTTP(r)
 		if err != nil {
 			http.Error(w, "invalid assertion", http.StatusBadRequest)
 			return
@@ -110,7 +110,7 @@ func handleCaCert(path string) func(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer h.Close()
-		a, err := assertionFromRequest(r)
+		a, err := assertionRequestFromHTTP(r)
 		if err != nil {
 			http.Error(w, "invalid assertion", http.StatusBadRequest)
 			return
