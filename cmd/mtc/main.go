@@ -46,9 +46,10 @@ func writeToFileOrStdout(path string, buf []byte) error {
 	return nil
 }
 
-// Flags used to create or specify an assertion. Used in `mtc ca queue'.
+// Flags used to create or specify an assertion request.
+// Used in `mtc ca queue' and 'mtc ca cert'.
 // Includes the in-file flag, if inFile is true.
-func assertionFlags(inFile bool) []cli.Flag {
+func assertionRequestFlags(inFile bool) []cli.Flag {
 	ret := []cli.Flag{
 		&cli.StringSliceFlag{
 			Name:     "dns",
@@ -110,7 +111,7 @@ func assertionFlags(inFile bool) []cli.Flag {
 				Name:     "in-file",
 				Category: "Assertion",
 				Aliases:  []string{"i"},
-				Usage:    "Read assertion from the given file",
+				Usage:    "Read assertion request from the given file",
 			},
 		)
 	}
@@ -118,21 +119,21 @@ func assertionFlags(inFile bool) []cli.Flag {
 	return ret
 }
 
-func assertionFromFlags(cc *cli.Context) (*ca.QueuedAssertion, error) {
-	qa, err := assertionFromFlagsUnchecked(cc)
+func assertionRequestFromFlags(cc *cli.Context) (*mtc.AssertionRequest, error) {
+	ar, err := assertionRequestFromFlagsUnchecked(cc)
 	if err != nil {
 		return nil, err
 	}
 
-	err = qa.Check()
+	err = ar.Check()
 	if err != nil {
 		return nil, err
 	}
 
-	return qa, nil
+	return ar, nil
 }
 
-func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
+func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest, error) {
 	var (
 		checksum []byte
 		err      error
@@ -150,7 +151,7 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		assertionBuf, err := os.ReadFile(assertionPath)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"reading assertion %s: %w",
+				"reading assertion request %s: %w",
 				assertionPath,
 				err,
 			)
@@ -174,24 +175,21 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 			}
 		}
 
-		var a mtc.Assertion
-		err = a.UnmarshalBinary(assertionBuf)
+		var ar mtc.AssertionRequest
+		err = ar.UnmarshalBinary(assertionBuf)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"parsing assertion %s: %w",
+				"parsing assertion request %s: %w",
 				assertionPath,
 				err,
 			)
 		}
-
-		return &ca.QueuedAssertion{
-			Assertion: a,
-			Checksum:  checksum,
-		}, nil
+		return &ar, nil
 	}
 
 	var (
 		a      mtc.Assertion
+		e      mtc.Evidence
 		scheme mtc.SignatureScheme
 	)
 
@@ -251,6 +249,9 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		if err != nil {
 			return nil, fmt.Errorf("from-x509: %s", err)
 		}
+
+		e.Type = mtc.X509ChainEvidenceType
+		e.Info = mtc.X509ChainEvidenceInfo(certs)
 	}
 
 	// Setting any claim will overwrite those suggested by the
@@ -339,14 +340,15 @@ func assertionFromFlagsUnchecked(cc *cli.Context) (*ca.QueuedAssertion, error) {
 		a.Subject = subj
 	}
 
-	return &ca.QueuedAssertion{
+	return &mtc.AssertionRequest{
 		Assertion: a,
+		Evidence:  e,
 		Checksum:  checksum,
 	}, nil
 }
 
 func handleCaQueue(cc *cli.Context) error {
-	qa, err := assertionFromFlags(cc)
+	ar, err := assertionRequestFromFlags(cc)
 	if err != nil {
 		return err
 	}
@@ -357,17 +359,17 @@ func handleCaQueue(cc *cli.Context) error {
 	}
 	defer h.Close()
 
-	return h.QueueMultiple(func(yield func(qa ca.QueuedAssertion) error) error {
+	return h.QueueMultiple(func(yield func(ar mtc.AssertionRequest) error) error {
 		for i := 0; i < cc.Int("debug-repeat"); i++ {
-			qa2 := *qa
+			ar2 := *ar
 			if cc.Bool("debug-vary") {
-				qa2.Checksum = nil
-				qa2.Assertion.Claims.DNS = append(
-					qa2.Assertion.Claims.DNS,
+				ar2.Checksum = nil
+				ar2.Assertion.Claims.DNS = append(
+					ar2.Assertion.Claims.DNS,
 					fmt.Sprintf("%d.example.com", i),
 				)
 			}
-			if err := yield(qa2); err != nil {
+			if err := yield(ar2); err != nil {
 				return err
 			}
 		}
@@ -375,13 +377,13 @@ func handleCaQueue(cc *cli.Context) error {
 	})
 }
 
-func handleNewAssertion(cc *cli.Context) error {
-	qa, err := assertionFromFlags(cc)
+func handleNewAssertionRequest(cc *cli.Context) error {
+	ar, err := assertionRequestFromFlags(cc)
 	if err != nil {
 		return err
 	}
 
-	buf, err := qa.Assertion.MarshalBinary()
+	buf, err := ar.MarshalBinary()
 	if err != nil {
 		return err
 	}
@@ -389,8 +391,6 @@ func handleNewAssertion(cc *cli.Context) error {
 	if err := writeToFileOrStdout(cc.String("out-file"), buf); err != nil {
 		return err
 	}
-
-	fmt.Fprintf(os.Stderr, "checksum: %x\n", qa.Checksum)
 
 	return nil
 }
@@ -412,17 +412,46 @@ func handleCaCert(cc *cli.Context) error {
 	}
 	defer h.Close()
 
-	qa, err := assertionFromFlags(cc)
+	ar, err := assertionRequestFromFlags(cc)
 	if err != nil {
 		return err
 	}
 
-	cert, err := h.CertificateFor(qa.Assertion)
+	cert, err := h.CertificateFor(ar.Assertion)
 	if err != nil {
 		return err
 	}
 
 	buf, err := cert.MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	if err := writeToFileOrStdout(cc.String("out-file"), buf); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func handleCaEvidence(cc *cli.Context) error {
+	h, err := ca.Open(cc.String("ca-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	ar, err := assertionRequestFromFlags(cc)
+	if err != nil {
+		return err
+	}
+
+	ev, err := h.EvidenceFor(ar.Assertion)
+	if err != nil {
+		return err
+	}
+
+	buf, err := ev.MarshalBinary()
 	if err != nil {
 		return err
 	}
@@ -443,13 +472,13 @@ func handleCaShowQueue(cc *cli.Context) error {
 
 	count := 0
 
-	err = h.WalkQueue(func(qa ca.QueuedAssertion) error {
+	err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
 		count++
-		a := qa.Assertion
+		a := ar.Assertion
 		cs := a.Claims
 		subj := a.Subject
 		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-		fmt.Fprintf(w, "checksum\t%x\n", qa.Checksum)
+		fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
 		fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 		switch subj := subj.(type) {
 		case *mtc.TLSSubject:
@@ -469,6 +498,7 @@ func handleCaShowQueue(cc *cli.Context) error {
 		if len(cs.IPv6) != 0 {
 			fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
 		}
+		writeEvidence(w, ar.Evidence)
 		w.Flush()
 		fmt.Printf("\n")
 		return nil
@@ -476,7 +506,7 @@ func handleCaShowQueue(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Total number of assertions in queue: %d\n", count)
+	fmt.Printf("Total number of assertion requests in queue: %d\n", count)
 	return nil
 }
 
@@ -614,9 +644,10 @@ func handleInspectIndex(cc *cli.Context) error {
 	}
 
 	var (
-		key    []byte
-		seqno  uint64
-		offset uint64
+		key            []byte
+		seqno          uint64
+		offset         uint64
+		evidenceOffset uint64
 	)
 
 	s := cryptobyte.String(buf)
@@ -624,11 +655,11 @@ func handleInspectIndex(cc *cli.Context) error {
 	total := 0
 	fmt.Printf("%64s %7s %7s\n", "key", "seqno", "offset")
 	for !s.Empty() {
-		if !s.ReadBytes(&key, 32) || !s.ReadUint64(&seqno) || !s.ReadUint64(&offset) {
+		if !s.ReadBytes(&key, 32) || !s.ReadUint64(&seqno) || !s.ReadUint64(&offset) || !s.ReadUint64(&evidenceOffset) {
 			return errors.New("truncated")
 		}
 
-		fmt.Printf("%x %7d %7d\n", key, seqno, offset)
+		fmt.Printf("%x %7d %7d %7d\n", key, seqno, offset, evidenceOffset)
 		total++
 	}
 
@@ -678,6 +709,28 @@ func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
 	}
 	if len(cs.IPv6) != 0 {
 		fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
+	}
+}
+
+func writeEvidence(w *tabwriter.Writer, e mtc.Evidence) {
+
+	fmt.Fprintf(w, "evidence\t")
+	switch e.Type {
+	case mtc.EmptyEvidenceType:
+		fmt.Fprintf(w, "empty\n")
+	case mtc.X509ChainEvidenceType:
+		fmt.Fprintf(w, "x509_chain\n")
+		for i, cert := range e.Info.(mtc.X509ChainEvidenceInfo) {
+			fmt.Fprintf(w, " certificate\t%d\n", i)
+			fmt.Fprintf(w, "  subject\t%s\n", cert.Subject.String())
+			fmt.Fprintf(w, "  issuer\t%s\n", cert.Issuer.String())
+			fmt.Fprintf(w, "  serial_no\t%x\n", cert.SerialNumber)
+			fmt.Fprintf(w, "  not_before\t%s\n", cert.NotBefore)
+			fmt.Fprintf(w, "  not_after\t%s\n", cert.NotAfter)
+		}
+	default:
+		fmt.Fprintf(w, "unknown\n")
+		fmt.Fprintf(w, " raw\t%x", e.Info.(mtc.UnknownEvidenceInfo))
 	}
 }
 
@@ -752,21 +805,49 @@ func handleInspectCert(cc *cli.Context) error {
 	return nil
 }
 
-func handleInspectAssertion(cc *cli.Context) error {
+func handleInspectAssertionRequest(cc *cli.Context) error {
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
 		return err
 	}
 
-	var a mtc.Assertion
-	err = a.UnmarshalBinary(buf)
+	var ar mtc.AssertionRequest
+	err = ar.UnmarshalBinary(buf)
 	if err != nil {
 		return err
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	writeAssertion(w, a)
+	fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
+	writeAssertion(w, ar.Assertion)
+	writeEvidence(w, ar.Evidence)
 	w.Flush()
+	return nil
+}
+
+func handleInspectEvidence(cc *cli.Context) error {
+
+	r, err := inspectGetReader(cc)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	count := 0
+	err = mtc.UnmarshalEvidenceEntries(
+		bufio.NewReader(r),
+		func(_ int, e *mtc.Evidence) error {
+			count++
+			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+			writeEvidence(w, *e)
+			w.Flush()
+			return nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Total number of evidence entries: %d\n", count)
 	return nil
 }
 
@@ -912,7 +993,7 @@ func main() {
 						Usage:  "queue assertion for issuance",
 						Action: handleCaQueue,
 						Flags: append(
-							assertionFlags(true),
+							assertionRequestFlags(true),
 							&cli.IntFlag{
 								Name:     "debug-repeat",
 								Category: "Debug",
@@ -931,10 +1012,23 @@ func main() {
 						Usage:  "creates certificate for an issued assertion",
 						Action: handleCaCert,
 						Flags: append(
-							assertionFlags(true),
+							assertionRequestFlags(true),
 							&cli.StringFlag{
 								Name:    "out-file",
-								Usage:   "path to write assertion to",
+								Usage:   "path to write cert to",
+								Aliases: []string{"o"},
+							},
+						),
+					},
+					{
+						Name:   "evidence",
+						Usage:  "fetches evidence for an issued assertion",
+						Action: handleCaEvidence,
+						Flags: append(
+							assertionRequestFlags(true),
+							&cli.StringFlag{
+								Name:    "out-file",
+								Usage:   "path to write evidence to",
 								Aliases: []string{"o"},
 							},
 						),
@@ -974,9 +1068,15 @@ func main() {
 						ArgsUsage: "[path]",
 					},
 					{
-						Name:      "assertion",
-						Usage:     "parses an assertion",
-						Action:    handleInspectAssertion,
+						Name:      "assertion-request",
+						Usage:     "parses an assertion request",
+						Action:    handleInspectAssertionRequest,
+						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "evidence",
+						Usage:     "parses batch's evidence file",
+						Action:    handleInspectEvidence,
 						ArgsUsage: "[path]",
 					},
 					{
@@ -1007,14 +1107,14 @@ func main() {
 				},
 			},
 			{
-				Name:   "new-assertion",
-				Usage:  "creates a new assertion",
-				Action: handleNewAssertion,
+				Name:   "new-assertion-request",
+				Usage:  "creates a new assertion request",
+				Action: handleNewAssertionRequest,
 				Flags: append(
-					assertionFlags(false),
+					assertionRequestFlags(false),
 					&cli.StringFlag{
 						Name:    "out-file",
-						Usage:   "path to write assertion to",
+						Usage:   "path to write assertion request to",
 						Aliases: []string{"o"},
 					},
 				),

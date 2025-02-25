@@ -21,11 +21,8 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
-const csLen = 32
-
 var (
-	ErrChecksumInvalid = errors.New("Invalid checksum")
-	ErrClosed          = errors.New("Handle is closed")
+	ErrClosed = errors.New("Handle is closed")
 )
 
 type NewOpts struct {
@@ -50,74 +47,10 @@ type Handle struct {
 
 	indices map[uint32]*Index
 	aas     map[uint32]*os.File
+	evs     map[uint32]*os.File
 	trees   map[uint32]*Tree
 
 	batchNumbersCache []uint32 // cache for existing batches
-}
-
-type QueuedAssertion struct {
-	Checksum  []byte
-	Assertion mtc.Assertion
-}
-
-func (a *QueuedAssertion) UnmarshalBinary(data []byte) error {
-	var (
-		s        cryptobyte.String = cryptobyte.String(data)
-		checksum [csLen]byte
-	)
-	if !s.CopyBytes(checksum[:]) {
-		return mtc.ErrTruncated
-	}
-
-	a.Checksum = make([]byte, csLen)
-	copy(a.Checksum, checksum[:])
-
-	checksum2 := sha256.Sum256([]byte(s))
-	if !bytes.Equal(checksum2[:], checksum[:]) {
-		return ErrChecksumInvalid
-	}
-
-	if err := a.Assertion.UnmarshalBinary([]byte(s)); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (a *QueuedAssertion) marshalAndCheckAssertion() ([]byte, error) {
-	buf, err := a.Assertion.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-
-	checksum2 := sha256.Sum256([]byte(buf))
-	if a.Checksum == nil {
-		a.Checksum = checksum2[:]
-	} else if !bytes.Equal(checksum2[:], a.Checksum) {
-		return nil, ErrChecksumInvalid
-	}
-
-	return buf, nil
-}
-
-// If set, checks whether the Checksum is correct. If not set, sets the
-// Checksum to the correct value.
-func (a *QueuedAssertion) Check() error {
-	_, err := a.marshalAndCheckAssertion()
-	return err
-}
-
-func (a *QueuedAssertion) MarshalBinary() ([]byte, error) {
-	var b cryptobyte.Builder
-
-	buf, err := a.marshalAndCheckAssertion()
-	if err != nil {
-		return nil, err
-	}
-	b.AddBytes(a.Checksum)
-	b.AddBytes(buf)
-
-	return b.Bytes()
 }
 
 func (ca *Handle) Params() mtc.CAParams {
@@ -134,6 +67,10 @@ func (ca *Handle) Close() error {
 	}
 
 	for _, r := range ca.aas {
+		r.Close()
+	}
+
+	for _, r := range ca.evs {
 		r.Close()
 	}
 
@@ -165,7 +102,7 @@ func (h *Handle) dropQueue() error {
 //
 // For each entry, if checksum is not nil, makes sure the assertion
 // matches the checksum
-func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) error) error {
+func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error) error) error {
 	if h.closed {
 		return ErrClosed
 	}
@@ -177,8 +114,8 @@ func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) err
 	defer w.Close()
 	bw := bufio.NewWriter(w)
 
-	if err := it(func(qa QueuedAssertion) error {
-		buf, err := qa.MarshalBinary()
+	if err := it(func(ar mtc.AssertionRequest) error {
+		buf, err := ar.MarshalBinary()
 		if err != nil {
 			return err
 		}
@@ -208,14 +145,9 @@ func (h *Handle) QueueMultiple(it func(yield func(qa QueuedAssertion) error) err
 // Queue assertion for publication.
 //
 // If checksum is not nil, makes sure assertion matches the checksum.
-func (h *Handle) Queue(a mtc.Assertion, checksum []byte) error {
-	return h.QueueMultiple(func(yield func(qa QueuedAssertion) error) error {
-		return yield(
-			QueuedAssertion{
-				Checksum:  checksum,
-				Assertion: a,
-			},
-		)
+func (h *Handle) Queue(ar mtc.AssertionRequest) error {
+	return h.QueueMultiple(func(yield func(ar mtc.AssertionRequest) error) error {
+		return yield(ar)
 	})
 }
 
@@ -227,6 +159,7 @@ func Open(path string) (*Handle, error) {
 		path:    path,
 		indices: make(map[uint32]*Index),
 		aas:     make(map[uint32]*os.File),
+		evs:     make(map[uint32]*os.File),
 		trees:   make(map[uint32]*Tree),
 	}
 	if err := h.lock(); err != nil {
@@ -280,6 +213,10 @@ func (h Handle) indexPath(number uint32) string {
 
 func (h Handle) aaPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "abridged-assertions")
+}
+
+func (h Handle) evPath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "evidence")
 }
 
 func (h Handle) batchPath(number uint32) string {
@@ -387,7 +324,7 @@ func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
 }
 
 // Calls f on each assertion queued to be published.
-func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
+func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
 	r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("Opening queue: %w", err)
@@ -400,7 +337,7 @@ func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
 		var (
 			prefix [2]byte
 			aLen   uint16
-			qa     QueuedAssertion
+			ar     mtc.AssertionRequest
 		)
 		_, err := io.ReadFull(br, prefix[:])
 		if err == io.EOF {
@@ -418,12 +355,12 @@ func (h *Handle) WalkQueue(f func(QueuedAssertion) error) error {
 			return fmt.Errorf("Reading queue: %w", err)
 		}
 
-		err = qa.UnmarshalBinary(buf)
+		err = ar.UnmarshalBinary(buf)
 		if err != nil {
 			return fmt.Errorf("Parsing queue: %w", err)
 		}
 
-		err = f(qa)
+		err = f(ar)
 		if err != nil {
 			return err
 		}
@@ -489,6 +426,14 @@ func (h *Handle) closeBatch(batch uint32) error {
 		delete(h.aas, batch)
 	}
 
+	if r, ok := h.evs[batch]; ok {
+		err := r.Close()
+		if err != nil {
+			return fmt.Errorf("closing evidence for %d: %w", batch, err)
+		}
+		delete(h.evs, batch)
+	}
+
 	if r, ok := h.trees[batch]; ok {
 		err := r.Close()
 		if err != nil {
@@ -545,10 +490,25 @@ func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
 	return r, nil
 }
 
+// Returns file handle to evidence file for the given batch.
+func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
+	if r, ok := ca.evs[batch]; ok {
+		return r, nil
+	}
+
+	r, err := os.Open(ca.evPath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
 type keySearchResult struct {
 	Batch          uint32
 	SequenceNumber uint64
 	Offset         uint64
+	EvidenceOffset uint64
 }
 
 // Returns the certificate for an issued assertion
@@ -589,7 +549,46 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 	}, nil
 }
 
-// Search for AbridgedAssertions's batch/seqno/offset by key.
+var errShortCircuit = errors.New("short circuit")
+
+// Returns the evidence for an issued assertion
+func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.Evidence, error) {
+	aa := a.Abridge()
+	var key [mtc.HashLen]byte
+	err := aa.Key(key[:])
+	if err != nil {
+		return nil, err
+	}
+	res, err := ca.aaByKey(key[:])
+	if err != nil {
+		return nil, fmt.Errorf("searching by key: %w", err)
+	}
+
+	if res == nil {
+		return nil, fmt.Errorf("no assertion with key %x on record", key)
+	}
+
+	var ev *mtc.Evidence
+	evFile, err := ca.evFileFor(res.Batch)
+	if err != nil {
+		return nil, err
+	}
+	_, err = evFile.Seek(int64(res.EvidenceOffset), 0)
+	if err != nil {
+		return nil, err
+	}
+	err = mtc.UnmarshalEvidenceEntries(evFile, func(_ int, ev2 *mtc.Evidence) error {
+		ev = ev2
+		return errShortCircuit
+	})
+	if err != errShortCircuit {
+		return nil, err
+	}
+
+	return ev, nil
+}
+
+// Search for AbridgedAssertions's batch/seqno/offset/evidence_offset by key.
 func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	batches, err := ca.listBatchRange()
 	if err != nil {
@@ -600,7 +599,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 		return nil, nil
 	}
 
-	for batch := batches.End - 1; batch <= batches.End; batch-- {
+	for batch := batches.End - 1; batch >= batches.Begin && batch <= batches.End; batch-- {
 		res, err := ca.aaByKeyIn(batch, key)
 		if err != nil {
 			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
@@ -610,6 +609,7 @@ func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 				Batch:          batch,
 				SequenceNumber: res.SequenceNumber,
 				Offset:         res.Offset,
+				EvidenceOffset: res.EvidenceOffset,
 			}, nil
 		}
 	}
@@ -760,6 +760,7 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 			"tree",
 			"signed-validity-window",
 			"abridged-assertions",
+			"evidence",
 			"index",
 		},
 	)
@@ -884,7 +885,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		prevHeads = w.ValidityWindow.TreeHeads
 	}
 
-	// Read queue and write abridged-assertions
+	// Read queue and write abridged-assertions and evidence
 	aasPath := gopath.Join(dir, "abridged-assertions")
 	aasW, err := os.Create(aasPath)
 	if err != nil {
@@ -893,23 +894,48 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	defer aasW.Close()
 	aasBW := bufio.NewWriter(aasW)
 
+	evPath := gopath.Join(dir, "evidence")
+	evW, err := os.Create(evPath)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", evPath, err)
+	}
+	defer evW.Close()
+	evBW := bufio.NewWriter(evW)
+
 	if !empty {
-		err = h.WalkQueue(func(qa QueuedAssertion) error {
-			aa := qa.Assertion.Abridge()
+		err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
+			aa := ar.Assertion.Abridge()
 			buf, err := aa.MarshalBinary()
 			if err != nil {
-				return fmt.Errorf("Marshalling assertion %x: %w", qa.Checksum, err)
+				return fmt.Errorf("Marshalling assertion %x: %w", ar.Checksum, err)
 			}
 
 			_, err = aasBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
 					"Writing assertion %x to %s: %w",
-					qa.Checksum,
+					ar.Checksum,
 					aasPath,
 					err,
 				)
 			}
+
+			ev := ar.Evidence
+			buf, err = ev.MarshalBinary()
+			if err != nil {
+				return fmt.Errorf("Marshalling evidence %x: %w", ar.Checksum, err)
+			}
+
+			_, err = evBW.Write(buf)
+			if err != nil {
+				return fmt.Errorf(
+					"Writing evidence %x to %s: %w",
+					ar.Checksum,
+					evPath,
+					err,
+				)
+			}
+
 			return nil
 		})
 		if err != nil {
@@ -931,6 +957,21 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		return fmt.Errorf("opening %s: %w", aasPath, err)
 	}
 	defer aasR.Close()
+
+	err = evBW.Flush()
+	if err != nil {
+		return fmt.Errorf("flushing %s: %w", evPath, err)
+	}
+
+	err = evW.Close()
+	if err != nil {
+		return fmt.Errorf("closing %s: %w", evPath, err)
+	}
+	evR, err := os.OpenFile(evPath, os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", evPath, err)
+	}
+	defer evR.Close()
 
 	// Compute tree
 	tree, err := batch.ComputeTree(bufio.NewReader(aasR))
@@ -970,7 +1011,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	defer indexW.Close()
 
-	err = ComputeIndex(aasR, indexW)
+	err = ComputeIndex(aasR, evR, indexW)
 	if err != nil {
 		return fmt.Errorf("computing %s to start: %w", indexPath, err)
 	}

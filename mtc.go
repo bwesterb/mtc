@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,24 @@ type Claims struct {
 	Unknown     []UnknownClaim
 }
 
+type EvidenceType uint16
+
+const (
+	EmptyEvidenceType EvidenceType = iota
+	X509ChainEvidenceType
+)
+
+type Evidence struct {
+	Type EvidenceType
+	Info EvidenceInfo
+}
+
+type EvidenceInfo any
+
+type X509ChainEvidenceInfo []*x509.Certificate
+
+type UnknownEvidenceInfo []byte
+
 // Represents a claim we do not how to interpret.
 type UnknownClaim struct {
 	Type ClaimType
@@ -98,6 +117,12 @@ type Assertion struct {
 type AbridgedAssertion struct {
 	Subject AbridgedSubject
 	Claims  Claims
+}
+
+type AssertionRequest struct {
+	Checksum  []byte
+	Assertion Assertion
+	Evidence  Evidence
 }
 
 // Copy of tls.SignatureScheme to prevent cycling dependencies
@@ -899,6 +924,87 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
+func (ar *AssertionRequest) UnmarshalBinary(data []byte) error {
+	var (
+		s cryptobyte.String = cryptobyte.String(data)
+	)
+	ar.Checksum = make([]byte, sha256.Size)
+	if !s.CopyBytes(ar.Checksum) {
+		return ErrTruncated
+	}
+
+	err := ar.Assertion.unmarshal(&s)
+	if err != nil {
+		return err
+	}
+
+	err = ar.Evidence.unmarshal(&s)
+	if err != nil {
+		return err
+	}
+
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+
+	err = ar.Check()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ar *AssertionRequest) marshalAndCheckAssertionRequest() ([]byte, error) {
+	var b cryptobyte.Builder
+
+	buf, err := ar.Assertion.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(buf)
+
+	buf, err = ar.Evidence.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(buf)
+
+	checksumBytes, err := b.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	checksum2 := sha256.Sum256(checksumBytes)
+	if ar.Checksum == nil {
+		ar.Checksum = checksum2[:]
+	} else if !bytes.Equal(checksum2[:], ar.Checksum) {
+		return nil, ErrChecksumInvalid
+	}
+
+	return b.Bytes()
+}
+
+// If set, checks whether the Checksum is correct. If not set, sets the
+// Checksum to the correct value.
+func (ar *AssertionRequest) Check() error {
+	// TODO validate evidence
+	_, err := ar.marshalAndCheckAssertionRequest()
+	return err
+}
+
+func (ar *AssertionRequest) MarshalBinary() ([]byte, error) {
+	var b cryptobyte.Builder
+
+	buf, err := ar.marshalAndCheckAssertionRequest()
+	if err != nil {
+		return nil, err
+	}
+	b.AddBytes(ar.Checksum)
+	b.AddBytes(buf)
+
+	return b.Bytes()
+}
+
 func (t *Tree) LeafCount() uint64 {
 	return t.nLeaves
 }
@@ -1468,7 +1574,7 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 
-	for i := 0; i < len(c.Unknown); i++ {
+	for i := range len(c.Unknown) {
 		claim := c.Unknown[i]
 		if i == 0 {
 			if claim.Type <= Ipv6ClaimType {
@@ -1487,6 +1593,84 @@ func (c *Claims) MarshalBinary() ([]byte, error) {
 	}
 
 	return b.Bytes()
+}
+
+func (e *Evidence) UnmarshalBinary(data []byte) error {
+	*e = Evidence{}
+	s := cryptobyte.String(data)
+	err := e.unmarshal(&s)
+	if err != nil {
+		return err
+	}
+	if !s.Empty() {
+		return ErrExtraBytes
+	}
+	return nil
+}
+
+func (e *Evidence) unmarshal(s *cryptobyte.String) error {
+
+	var (
+		evidenceInfo cryptobyte.String
+		evidenceType EvidenceType
+	)
+
+	if !s.ReadUint16((*uint16)(&evidenceType)) ||
+		!s.ReadUint24LengthPrefixed(&evidenceInfo) {
+		return ErrTruncated
+	}
+	e.Type = evidenceType
+	switch e.Type {
+	case EmptyEvidenceType:
+		if !evidenceInfo.Empty() {
+			return errors.New("non-empty info for empty evidence")
+		}
+	case X509ChainEvidenceType:
+		chain, err := x509.ParseCertificates([]byte(evidenceInfo))
+		if err != nil {
+			return errors.New("failed to parse X.509 chain")
+		}
+		e.Info = X509ChainEvidenceInfo(chain)
+	default:
+		unknownInfo := make([]byte, len(evidenceInfo))
+		evidenceInfo.CopyBytes(unknownInfo)
+		e.Info = UnknownEvidenceInfo(unknownInfo)
+	}
+
+	return nil
+}
+
+func (e *Evidence) MarshalBinary() ([]byte, error) {
+	var b cryptobyte.Builder
+
+	b.AddUint16(uint16(e.Type))
+	b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
+		switch e.Type {
+		case EmptyEvidenceType:
+		case X509ChainEvidenceType:
+			for _, cert := range e.Info.(X509ChainEvidenceInfo) {
+				b.AddBytes(cert.Raw)
+			}
+		default:
+			b.AddBytes(e.Info.(UnknownEvidenceInfo))
+		}
+	})
+
+	return b.Bytes()
+}
+
+// Unmarshals Evidence entries from r and calls f for each, with
+// the offset in the stream as first argument, and the Evidence
+// as second argument.
+//
+// Returns early on error.
+func UnmarshalEvidenceEntries(r io.Reader,
+	f func(int, *Evidence) error) error {
+	return unmarshal(r, f)
+}
+
+func (e *Evidence) maxSize() int {
+	return (65535+2)*2 + 2
 }
 
 func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProof {
