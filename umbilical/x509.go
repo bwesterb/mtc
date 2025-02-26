@@ -3,6 +3,8 @@
 package umbilical
 
 import (
+	"time"
+
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/umbilical/revocation"
 
@@ -87,9 +89,9 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 	return
 }
 
-// Checks whether the given assertion (to be) issued in the given batch
-// is consistent with the given X.509 certificate chain and
-// trusted roots. The assertion is allowed to cover less than the certificate:
+// Checks whether the given assertion (to be) issued is consistent with
+// the given X.509 certificate chain and accepted roots for the given validity
+// interval. The assertion is allowed to cover less than the certificate:
 // eg, only example.com where the certificate covers some.example.com too.
 //
 // On the other hand, we are more strict than is perhaps required. For
@@ -102,7 +104,7 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 // revocation of intermediates.
 //
 // If consistent, returns one or more verified chains.
-func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
+func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
 	chain []*x509.Certificate, roots *x509.CertPool, rc *revocation.Checker) (
 	[][]*x509.Certificate, error) {
 	if len(chain) == 0 {
@@ -168,9 +170,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
 		return nil, fmt.Errorf("Subjects don't match")
 	}
 
-	// Verify chain at the start of the batch's validity period
-	start, end := batch.ValidityInterval()
-
+	// Verify chain at the start of the validity period
 	opts := x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: x509.NewCertPool(),
@@ -187,7 +187,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, batch mtc.Batch,
 	var ret [][]*x509.Certificate
 	var errs []error
 
-	// Verify each chain at the end of the batch's validity period
+	// Verify each chain at the end of the validity period
 	for _, candidateChain := range chains {
 		opts = x509.VerifyOptions{
 			Roots:         x509.NewCertPool(),
