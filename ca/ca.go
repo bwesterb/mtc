@@ -125,7 +125,22 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 	defer w.Close()
 	bw := bufio.NewWriter(w)
 
+	nextBatch := mtc.Batch{
+		Number: h.params.ActiveBatches(time.Now()).End + 1,
+		CA:     &h.params,
+	}
+	batchStart, batchEnd := nextBatch.ValidityInterval()
+
 	if err := it(func(ar mtc.AssertionRequest) error {
+		// Check that the assertion matches the checksum.
+		err = ar.Check()
+		if err != nil {
+			return err
+		}
+		notAfter := ar.NotAfter
+		if notAfter.IsZero() || batchEnd.Before(notAfter) {
+			notAfter = batchEnd
+		}
 		switch h.params.EvidencePolicy {
 		case mtc.EmptyEvidencePolicyType:
 		case mtc.UmbilicalEvidencePolicyType:
@@ -145,21 +160,23 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 				}
 			}
 			if chain == nil {
-				return fmt.Errorf("missing x509 chain evidence")
+				return errors.New("missing x509 chain evidence")
 			}
-			// TODO validate based on the min of the certificate 'not_after' and the
-			// next batch's expiration, and add the timestamp to the queued assertion.
-			// https://github.com/davidben/merkle-tree-certs/pull/92
-			batch := mtc.Batch{
-				CA:     &h.params,
-				Number: h.params.ActiveBatches(time.Now()).End + 1,
+			if notAfter.IsZero() || chain[0].NotAfter.Before(notAfter) {
+				notAfter = chain[0].NotAfter
 			}
-			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batch, chain, h.umbilicalRoots, h.revocationChecker)
+			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batchStart, notAfter, chain, h.umbilicalRoots, h.revocationChecker)
 			if err != nil {
 				return err
 			}
 		default:
 			return fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
+		}
+
+		if notAfter != ar.NotAfter {
+			ar.NotAfter = notAfter
+			// Recompute the checksum.
+			ar.Checksum = nil
 		}
 
 		buf, err := ar.MarshalBinary()
@@ -1009,6 +1026,13 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	if !empty {
 		err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
+			// Skip assertions that are already expired.
+			if start, _ := batch.ValidityInterval(); ar.NotAfter.Before(start) {
+				return nil
+			}
+
+			// TODO add not_after to abridged assertion and proof
+			// https://github.com/davidben/merkle-tree-certs/pull/92
 			aa := ar.Assertion.Abridge()
 			buf, err := aa.MarshalBinary()
 			if err != nil {

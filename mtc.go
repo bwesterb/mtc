@@ -136,6 +136,7 @@ type AssertionRequest struct {
 	Checksum  []byte
 	Assertion Assertion
 	Evidence  EvidenceList
+	NotAfter  time.Time
 }
 
 // Copy of tls.SignatureScheme to prevent cycling dependencies
@@ -957,7 +958,8 @@ func (e UnknownEvidence) Info() []byte       { return e.info }
 
 func (ar *AssertionRequest) UnmarshalBinary(data []byte) error {
 	var (
-		s cryptobyte.String = cryptobyte.String(data)
+		notAfter uint64
+		s        cryptobyte.String = cryptobyte.String(data)
 	)
 	ar.Checksum = make([]byte, sha256.Size)
 	if !s.CopyBytes(ar.Checksum) {
@@ -973,6 +975,11 @@ func (ar *AssertionRequest) UnmarshalBinary(data []byte) error {
 	if err != nil {
 		return err
 	}
+
+	if !s.ReadUint64(&notAfter) {
+		return ErrTruncated
+	}
+	ar.NotAfter = time.Unix(int64(notAfter), 0)
 
 	if !s.Empty() {
 		return ErrExtraBytes
@@ -1000,6 +1007,8 @@ func (ar *AssertionRequest) marshalAndCheckAssertionRequest() ([]byte, error) {
 		return nil, err
 	}
 	b.AddBytes(buf)
+
+	b.AddUint64(uint64(ar.NotAfter.Unix()))
 
 	checksumBytes, err := b.Bytes()
 	if err != nil {

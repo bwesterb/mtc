@@ -96,7 +96,11 @@ func assertionRequestFlags(inFile bool) []cli.Flag {
 			Category: "Assertion",
 			Usage:    "Only proceed if assertion matches checksum",
 		},
-
+		&cli.StringFlag{
+			Name:     "not_after",
+			Category: "Assertion",
+			Usage:    "An initial not_after value for the assertion request in RFC3339 format, which can be used to shorten an assertion's lifetime",
+		},
 		&cli.StringFlag{
 			Name:     "from-x509-pem",
 			Category: "Assertion",
@@ -142,6 +146,7 @@ func assertionRequestFromFlags(cc *cli.Context) (*mtc.AssertionRequest, error) {
 func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest, error) {
 	var (
 		checksum []byte
+		notAfter time.Time
 		err      error
 	)
 
@@ -149,6 +154,13 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 		checksum, err = hex.DecodeString(cc.String("checksum"))
 		if err != nil {
 			return nil, fmt.Errorf("parsing checksum: %w", err)
+		}
+	}
+
+	if cc.String("not_after") != "" {
+		notAfter, err = time.Parse(time.RFC3339, cc.String("not_after"))
+		if err != nil {
+			return nil, fmt.Errorf("parsing not_after: %w", err)
 		}
 	}
 
@@ -353,6 +365,7 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 		Assertion: a,
 		Evidence:  el,
 		Checksum:  checksum,
+		NotAfter:  notAfter,
 	}, nil
 }
 
@@ -483,31 +496,8 @@ func handleCaShowQueue(cc *cli.Context) error {
 
 	err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
 		count++
-		a := ar.Assertion
-		cs := a.Claims
-		subj := a.Subject
 		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-		fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
-		fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
-		switch subj := subj.(type) {
-		case *mtc.TLSSubject:
-			asubj := subj.Abridge().(*mtc.AbridgedTLSSubject)
-			fmt.Fprintf(w, "signature_scheme\t%s\n", asubj.SignatureScheme)
-			fmt.Fprintf(w, "public_key_hash\t%x\n", asubj.PublicKeyHash[:])
-		}
-		if len(cs.DNS) != 0 {
-			fmt.Fprintf(w, "dns\t%s\n", cs.DNS)
-		}
-		if len(cs.DNSWildcard) != 0 {
-			fmt.Fprintf(w, "dns_wildcard\t%s\n", cs.DNSWildcard)
-		}
-		if len(cs.IPv4) != 0 {
-			fmt.Fprintf(w, "ip4\t%s\n", cs.IPv4)
-		}
-		if len(cs.IPv6) != 0 {
-			fmt.Fprintf(w, "ip6\t%s\n", cs.IPv6)
-		}
-		err = writeEvidenceList(w, ar.Evidence)
+		err = writeAssertionRequest(w, ar)
 		if err != nil {
 			return err
 		}
@@ -715,6 +705,21 @@ func handleInspectTree(cc *cli.Context) error {
 	return nil
 }
 
+func writeAssertionRequest(w *tabwriter.Writer, ar mtc.AssertionRequest) error {
+	fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
+	if ar.NotAfter.IsZero() {
+		fmt.Fprintf(w, "not_after\tunset\n")
+	} else {
+		fmt.Fprintf(w, "not_after\t%v\n", ar.NotAfter.UTC())
+	}
+	writeAssertion(w, ar.Assertion)
+	err := writeEvidenceList(w, ar.Evidence)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
 	aa := a.Abridge()
 	cs := aa.Claims
@@ -849,9 +854,7 @@ func handleInspectAssertionRequest(cc *cli.Context) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
-	writeAssertion(w, ar.Assertion)
-	err = writeEvidenceList(w, ar.Evidence)
+	err = writeAssertionRequest(w, ar)
 	if err != nil {
 		return err
 	}
