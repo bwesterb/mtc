@@ -30,6 +30,7 @@ type CAParams struct {
 	ValidityWindowSize uint64
 	StorageWindowSize  uint64
 	HttpServer         string
+	EvidencePolicy     EvidencePolicyType
 }
 
 const (
@@ -73,6 +74,13 @@ type UnknownEvidence struct {
 	typ  EvidenceType
 	info []byte
 }
+
+type EvidencePolicyType uint16
+
+const (
+	EmptyEvidencePolicyType EvidencePolicyType = iota
+	RequireX509ChainEvidencePolicyType
+)
 
 // Represents a claim we do not how to interpret.
 type UnknownClaim struct {
@@ -471,6 +479,7 @@ func (p *CAParams) MarshalBinary() ([]byte, error) {
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes([]byte(p.HttpServer))
 	})
+	b.AddUint16(uint16(p.EvidencePolicy))
 	return b.Bytes()
 }
 
@@ -493,7 +502,8 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 		!s.ReadUint64(&p.Lifetime) ||
 		!s.ReadUint64(&p.ValidityWindowSize) ||
 		!s.ReadUint64(&p.StorageWindowSize) ||
-		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&httpServerBuf)) {
+		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&httpServerBuf)) ||
+		!s.ReadUint16((*uint16)(&p.EvidencePolicy)) {
 		return ErrTruncated
 	}
 
@@ -1005,7 +1015,6 @@ func (ar *AssertionRequest) marshalAndCheckAssertionRequest() ([]byte, error) {
 // If set, checks whether the Checksum is correct. If not set, sets the
 // Checksum to the correct value.
 func (ar *AssertionRequest) Check() error {
-	// TODO validate evidence
 	_, err := ar.marshalAndCheckAssertionRequest()
 	return err
 }

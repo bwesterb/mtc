@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/bwesterb/mtc"
+	"github.com/bwesterb/mtc/umbilical"
+	"github.com/bwesterb/mtc/umbilical/revocation"
 
 	"github.com/nightlyone/lockfile"
 	"golang.org/x/crypto/cryptobyte"
@@ -35,15 +38,19 @@ type NewOpts struct {
 	BatchDuration   time.Duration
 	Lifetime        time.Duration
 	StorageDuration time.Duration
+	EvidencePolicy  mtc.EvidencePolicyType
+	AcceptedRoots   []byte
 }
 
 // Handle for exclusive access to a Merkle Tree CA state.
 type Handle struct {
-	params mtc.CAParams
-	signer mtc.Signer
-	flock  lockfile.Lockfile
-	path   string
-	closed bool
+	params            mtc.CAParams
+	signer            mtc.Signer
+	flock             lockfile.Lockfile
+	path              string
+	closed            bool
+	acceptedRoots     *x509.CertPool
+	revocationChecker *revocation.Checker
 
 	indices map[uint32]*Index
 	aas     map[uint32]*os.File
@@ -60,6 +67,10 @@ func (ca *Handle) Params() mtc.CAParams {
 func (ca *Handle) Close() error {
 	if ca.closed {
 		return ErrClosed
+	}
+
+	if ca.revocationChecker != nil {
+		ca.revocationChecker.Close()
 	}
 
 	for _, idx := range ca.indices {
@@ -115,6 +126,38 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 	bw := bufio.NewWriter(w)
 
 	if err := it(func(ar mtc.AssertionRequest) error {
+		if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+			var (
+				err   error
+				chain []*x509.Certificate
+			)
+			// TODO this checks only the first matching evidence. Do we want to allow multiple
+			// of the same evidence type to be submitted, and should we check them all?
+			for _, ev := range ar.Evidence {
+				if ev.Type() == mtc.X509ChainEvidenceType {
+					chain, err = ev.(mtc.X509ChainEvidence).Chain()
+					if err != nil {
+						return err
+					}
+					break
+				}
+			}
+			if chain == nil {
+				return fmt.Errorf("missing x509 chain evidence")
+			}
+			// TODO validate based on the min of the certificate 'not_after' and the
+			// next batch's expiration, and add the timestamp to the queued assertion.
+			// https://github.com/davidben/merkle-tree-certs/pull/92
+			batch := mtc.Batch{
+				CA:     &h.params,
+				Number: h.params.ActiveBatches(time.Now()).End + 1,
+			}
+			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batch, chain, h.acceptedRoots, h.revocationChecker)
+			if err != nil {
+				return err
+			}
+		}
+
 		buf, err := ar.MarshalBinary()
 		if err != nil {
 			return err
@@ -188,6 +231,22 @@ func Open(path string) (*Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
 	}
+	if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+		h.revocationChecker, err = revocation.NewChecker(revocation.Config{Cache: h.revocationCachePath()})
+		if err != nil {
+			return nil, fmt.Errorf("creating revocation checker from %s: %w", h.revocationCachePath(), err)
+		}
+		h.acceptedRoots = x509.NewCertPool()
+		pemCerts, err := os.ReadFile(h.rootsPath())
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", h.rootsPath(), err)
+		}
+		// TODO use AddCertWithConstraint to deal with constrained roots:
+		// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
+		if !h.acceptedRoots.AppendCertsFromPEM(pemCerts) {
+			return nil, fmt.Errorf("failed to append root certs")
+		}
+	}
 	return &h, nil
 }
 
@@ -201,6 +260,14 @@ func (h Handle) paramsPath() string {
 
 func (h Handle) queuePath() string {
 	return gopath.Join(h.path, "queue")
+}
+
+func (h Handle) revocationCachePath() string {
+	return gopath.Join(h.path, "revocation-cache")
+}
+
+func (h Handle) rootsPath() string {
+	return gopath.Join(h.path, "www", "mtc", "v1", "roots")
 }
 
 func (h Handle) treePath(number uint32) string {
@@ -1100,6 +1167,14 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	if opts.StorageDuration.Nanoseconds()%opts.BatchDuration.Nanoseconds() != 0 {
 		return nil, errors.New("StorageDuration has to be a multiple of BatchDuration")
 	}
+	if opts.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+		if opts.AcceptedRoots == nil {
+			return nil, errors.New("AcceptedRoots must be set when x509 chain evidence is required")
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(opts.AcceptedRoots) {
+			return nil, errors.New("Failed to parse any PEM-encoded roots from AcceptedRoots")
+		}
+	}
 	h.params.ValidityWindowSize = uint64(opts.Lifetime.Nanoseconds() / opts.BatchDuration.Nanoseconds())
 	h.params.BatchDuration = uint64(opts.BatchDuration.Nanoseconds() / 1000000000)
 	h.params.Lifetime = uint64(opts.Lifetime.Nanoseconds() / 1000000000)
@@ -1109,6 +1184,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 
 	h.params.HttpServer = opts.HttpServer
 	h.params.Issuer = opts.Issuer
+	h.params.EvidencePolicy = opts.EvidencePolicy
 
 	if opts.SignatureScheme == 0 {
 		opts.SignatureScheme = mtc.TLSMLDSA87
@@ -1172,6 +1248,13 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	// Queue
 	if err := os.WriteFile(h.queuePath(), []byte{}, 0o644); err != nil {
 		return nil, fmt.Errorf("Writing %s: %w", h.queuePath(), err)
+	}
+
+	// Accepted roots
+	if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+		if err := os.WriteFile(h.rootsPath(), opts.AcceptedRoots, 0o644); err != nil {
+			return nil, fmt.Errorf("Writing %s: %w", h.rootsPath(), err)
+		}
 	}
 
 	paramsBuf, err := h.params.MarshalBinary()

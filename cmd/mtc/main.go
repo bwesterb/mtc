@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"maps"
+	"slices"
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
@@ -26,6 +28,10 @@ var (
 	errNoCaParams = errors.New("missing ca-params flag")
 	errArgs       = errors.New("Wrong number of arguments")
 	fCpuProfile   *os.File
+	evPolicyMap   = map[string]mtc.EvidencePolicyType{
+		"empty":              mtc.EmptyEvidencePolicyType,
+		"require-x509-chain": mtc.RequireX509ChainEvidencePolicyType,
+	}
 )
 
 // Writes buf either to stdout (if path is empty) or path.
@@ -547,6 +553,19 @@ func handleCaNew(cc *cli.Context) error {
 		return err
 	}
 
+	evPolicy, ok := evPolicyMap[cc.String("evidence-policy")]
+	if !ok {
+		return fmt.Errorf("unknown evidence policy: %s", cc.String("evidence-policy"))
+	}
+
+	var acceptedRoots []byte
+	if evPolicy == mtc.RequireX509ChainEvidencePolicyType {
+		acceptedRoots, err = os.ReadFile(cc.String("roots"))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", cc.String("roots"), err)
+		}
+	}
+
 	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
@@ -556,6 +575,8 @@ func handleCaNew(cc *cli.Context) error {
 			BatchDuration:   cc.Duration("batch-duration"),
 			StorageDuration: cc.Duration("storage-duration"),
 			Lifetime:        cc.Duration("lifetime"),
+			EvidencePolicy:  evPolicy,
+			AcceptedRoots:   acceptedRoots,
 		},
 	)
 	if err != nil {
@@ -960,9 +981,10 @@ func main() {
 				Name: "ca",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
-						Name:  "ca-path",
-						Usage: "path to CA state",
-						Value: ".",
+						Name:    "ca-path",
+						Aliases: []string{"p"},
+						Usage:   "path to CA state",
+						Value:   ".",
 					},
 				},
 				Subcommands: []*cli.Command{
@@ -988,10 +1010,13 @@ func main() {
 								Usage:   "time to serve assertions",
 							},
 							&cli.StringFlag{
-								Name:    "ca-path",
-								Aliases: []string{"p"},
-								Usage:   "root directory to store CA files",
-								Value:   ".",
+								Name:  "evidence-policy",
+								Usage: fmt.Sprintf("policy determining assertion evidence requirements (accepted values %v)", slices.Collect(maps.Keys(evPolicyMap))),
+								Value: "empty",
+							},
+							&cli.StringFlag{
+								Name:  "roots",
+								Usage: "path to PEM-encode root store when X.509 chain evidence is required",
 							},
 						},
 					},
