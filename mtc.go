@@ -1638,6 +1638,8 @@ func (el *EvidenceList) unmarshal(s *cryptobyte.String) error {
 		return ErrTruncated
 	}
 
+	*el = nil
+
 	for !evidenceList.Empty() {
 		if !evidenceList.ReadUint16((*uint16)(&evidenceType)) ||
 			!evidenceList.ReadUint24LengthPrefixed(&evidenceInfo) {
