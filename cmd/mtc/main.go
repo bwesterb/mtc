@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"maps"
+	"slices"
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
@@ -26,6 +28,10 @@ var (
 	errNoCaParams = errors.New("missing ca-params flag")
 	errArgs       = errors.New("Wrong number of arguments")
 	fCpuProfile   *os.File
+	evPolicyMap   = map[string]mtc.EvidencePolicyType{
+		"empty":     mtc.EmptyEvidencePolicyType,
+		"umbilical": mtc.UmbilicalEvidencePolicyType,
+	}
 )
 
 // Writes buf either to stdout (if path is empty) or path.
@@ -250,7 +256,7 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 			return nil, fmt.Errorf("from-x509: %s", err)
 		}
 
-		ev, err := mtc.NewX509ChainEvidence(certs)
+		ev, err := mtc.NewUmbilicalEvidence(certs)
 		if err != nil {
 			return nil, err
 		}
@@ -547,15 +553,30 @@ func handleCaNew(cc *cli.Context) error {
 		return err
 	}
 
+	evPolicy, ok := evPolicyMap[cc.String("evidence-policy")]
+	if !ok {
+		return fmt.Errorf("unknown evidence policy: %s", cc.String("evidence-policy"))
+	}
+
+	var umbilicalRoots []byte
+	if evPolicy == mtc.UmbilicalEvidencePolicyType {
+		umbilicalRoots, err = os.ReadFile(cc.String("umbilical-roots"))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", cc.String("umbilical-roots"), err)
+		}
+	}
+
 	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
 			Issuer:     oid,
 			HttpServer: cc.Args().Get(1),
 
-			BatchDuration:   cc.Duration("batch-duration"),
-			StorageDuration: cc.Duration("storage-duration"),
-			Lifetime:        cc.Duration("lifetime"),
+			BatchDuration:     cc.Duration("batch-duration"),
+			StorageDuration:   cc.Duration("storage-duration"),
+			Lifetime:          cc.Duration("lifetime"),
+			EvidencePolicy:    evPolicy,
+			UmbilicalRootsPEM: umbilicalRoots,
 		},
 	)
 	if err != nil {
@@ -723,9 +744,9 @@ func writeEvidenceList(w *tabwriter.Writer, el mtc.EvidenceList) error {
 	fmt.Fprintf(w, "evidence-list (%d entries)\n", len(el))
 	for _, ev := range el {
 		switch ev.Type() {
-		case mtc.X509ChainEvidenceType:
-			fmt.Fprintf(w, "x509_chain\n")
-			chain, err := ev.(mtc.X509ChainEvidence).Chain()
+		case mtc.UmbilicalEvidenceType:
+			fmt.Fprintf(w, "umbilical\n")
+			chain, err := ev.(mtc.UmbilicalEvidence).Chain()
 			if err != nil {
 				return err
 			}
@@ -960,9 +981,10 @@ func main() {
 				Name: "ca",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
-						Name:  "ca-path",
-						Usage: "path to CA state",
-						Value: ".",
+						Name:    "ca-path",
+						Aliases: []string{"p"},
+						Usage:   "path to CA state",
+						Value:   ".",
 					},
 				},
 				Subcommands: []*cli.Command{
@@ -988,10 +1010,13 @@ func main() {
 								Usage:   "time to serve assertions",
 							},
 							&cli.StringFlag{
-								Name:    "ca-path",
-								Aliases: []string{"p"},
-								Usage:   "root directory to store CA files",
-								Value:   ".",
+								Name:  "evidence-policy",
+								Usage: fmt.Sprintf("policy determining assertion evidence requirements (accepted values %v)", slices.Collect(maps.Keys(evPolicyMap))),
+								Value: "empty",
+							},
+							&cli.StringFlag{
+								Name:  "umbilical-roots",
+								Usage: "path to PEM-encoded accepted roots for umbilical (X.509 chain) evidence",
 							},
 						},
 					},
