@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"sync"
@@ -36,6 +37,10 @@ type Checker struct {
 	fetchMux sync.Mutex
 	// URL -> Cond to wait on a CRL that's currently fetching.
 	crlFetching map[string]*sync.Cond
+
+	// Close channel to stop auto-eviction worker
+	evictionWorkerChan chan struct{}
+	wg                 sync.WaitGroup
 }
 
 func NewChecker(cfg Config) (*Checker, error) {
@@ -59,7 +64,100 @@ func NewChecker(cfg Config) (*Checker, error) {
 
 	ret.crlFetching = make(map[string]*sync.Cond)
 
+	if err := ret.evictExpired(); err != nil {
+		return nil, err
+	}
+
+	// Automatically check for expired cache entries in the background.
+	ret.evictionWorkerChan = make(chan struct{})
+	ret.wg.Add(1)
+	go func() {
+		defer ret.wg.Done()
+		for {
+			select {
+			case <-ret.evictionWorkerChan:
+				return
+			case <-time.After(time.Hour):
+			}
+
+			if err := ret.evictExpired(); err != nil {
+				slog.Error(
+					"evictExpired",
+					"err",
+					err,
+				)
+			}
+		}
+	}()
+
 	return &ret, nil
+}
+
+// Walks cache and removes expired entries.
+func (c *Checker) evictExpired() error {
+	toRemove := make(map[string]uint64)
+
+	totalEntries := 0
+	removedEntries := 0
+	startTime := time.Now()
+	err := c.cache.View(func(tx *bolt.Tx) error {
+		crlsBucket := tx.Bucket([]byte("crls"))
+		c := crlsBucket.Cursor()
+
+		var entry crlEntry
+		for url, rawEntry := c.First(); url != nil; url, rawEntry = c.Next() {
+			totalEntries++
+			if err := json.Unmarshal(rawEntry, &entry); err != nil {
+				return err
+			}
+			if time.Until(entry.Expires) < 0 {
+				toRemove[string(url)] = entry.BucketID
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("iterating expired CRLs: %w", err)
+	}
+
+	if len(toRemove) == 0 {
+		slog.Info(
+			"revocation.Checker.evictExpired",
+			"removed", 0,
+			"time", time.Since(startTime),
+		)
+		return nil
+	}
+
+	err = c.cache.Update(func(tx *bolt.Tx) error {
+		crlsBucket := tx.Bucket([]byte("crls"))
+		for url, bucketID := range toRemove {
+			var entry crlEntry
+			if err := json.Unmarshal(crlsBucket.Get([]byte(url)), &entry); err != nil {
+				return err
+			}
+			if entry.BucketID != bucketID {
+				continue
+			}
+
+			removedEntries++
+			_ = tx.DeleteBucket([]byte(fmt.Sprintf("crl %d", entry.BucketID)))
+			_ = crlsBucket.Delete([]byte(url))
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("removing expired CRLs: %w", err)
+	}
+
+	slog.Info(
+		"revocation.Checker.evictExpired",
+		"removed", removedEntries,
+		"total", totalEntries,
+		"time", time.Since(startTime),
+	)
+
+	return nil
 }
 
 // Checks whether the given certificate is revoked by first trying OCSP,
@@ -182,8 +280,12 @@ func (c *Checker) checkCRLCache(url string, serial *big.Int) (*bool, error) {
 
 	if time.Until(entry.Expires) < 0 {
 		err := c.cache.Update(func(tx *bolt.Tx) error {
-			_ = tx.DeleteBucket([]byte(fmt.Sprintf("crl %d", entry.BucketID)))
-			_ = tx.Bucket([]byte("crls")).Delete([]byte(url))
+			crlsBucket := tx.Bucket([]byte("crls"))
+			rawEntry2 := crlsBucket.Get([]byte(url))
+			if bytes.Equal(rawEntry2, rawEntry) {
+				_ = tx.DeleteBucket([]byte(fmt.Sprintf("crl %d", entry.BucketID)))
+				_ = crlsBucket.Delete([]byte(url))
+			}
 			return nil
 		})
 		return nil, err
@@ -321,5 +423,7 @@ func (c *Checker) fetchAndCacheCRL(url string, issuer *x509.Certificate) error {
 }
 
 func (c *Checker) Close() {
+	close(c.evictionWorkerChan)
+	c.wg.Wait()
 	c.cache.Close()
 }
