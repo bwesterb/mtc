@@ -29,8 +29,8 @@ var (
 	errArgs       = errors.New("Wrong number of arguments")
 	fCpuProfile   *os.File
 	evPolicyMap   = map[string]mtc.EvidencePolicyType{
-		"empty":              mtc.EmptyEvidencePolicyType,
-		"require-x509-chain": mtc.RequireX509ChainEvidencePolicyType,
+		"empty":     mtc.EmptyEvidencePolicyType,
+		"umbilical": mtc.UmbilicalEvidencePolicyType,
 	}
 )
 
@@ -256,7 +256,7 @@ func assertionRequestFromFlagsUnchecked(cc *cli.Context) (*mtc.AssertionRequest,
 			return nil, fmt.Errorf("from-x509: %s", err)
 		}
 
-		ev, err := mtc.NewX509ChainEvidence(certs)
+		ev, err := mtc.NewUmbilicalEvidence(certs)
 		if err != nil {
 			return nil, err
 		}
@@ -558,11 +558,11 @@ func handleCaNew(cc *cli.Context) error {
 		return fmt.Errorf("unknown evidence policy: %s", cc.String("evidence-policy"))
 	}
 
-	var acceptedRoots []byte
-	if evPolicy == mtc.RequireX509ChainEvidencePolicyType {
-		acceptedRoots, err = os.ReadFile(cc.String("roots"))
+	var umbilicalRoots []byte
+	if evPolicy == mtc.UmbilicalEvidencePolicyType {
+		umbilicalRoots, err = os.ReadFile(cc.String("umbilical-roots"))
 		if err != nil {
-			return fmt.Errorf("reading %s: %w", cc.String("roots"), err)
+			return fmt.Errorf("reading %s: %w", cc.String("umbilical-roots"), err)
 		}
 	}
 
@@ -572,11 +572,11 @@ func handleCaNew(cc *cli.Context) error {
 			Issuer:     oid,
 			HttpServer: cc.Args().Get(1),
 
-			BatchDuration:   cc.Duration("batch-duration"),
-			StorageDuration: cc.Duration("storage-duration"),
-			Lifetime:        cc.Duration("lifetime"),
-			EvidencePolicy:  evPolicy,
-			AcceptedRoots:   acceptedRoots,
+			BatchDuration:     cc.Duration("batch-duration"),
+			StorageDuration:   cc.Duration("storage-duration"),
+			Lifetime:          cc.Duration("lifetime"),
+			EvidencePolicy:    evPolicy,
+			UmbilicalRootsPEM: umbilicalRoots,
 		},
 	)
 	if err != nil {
@@ -744,9 +744,9 @@ func writeEvidenceList(w *tabwriter.Writer, el mtc.EvidenceList) error {
 	fmt.Fprintf(w, "evidence-list (%d entries)\n", len(el))
 	for _, ev := range el {
 		switch ev.Type() {
-		case mtc.X509ChainEvidenceType:
-			fmt.Fprintf(w, "x509_chain\n")
-			chain, err := ev.(mtc.X509ChainEvidence).Chain()
+		case mtc.UmbilicalEvidenceType:
+			fmt.Fprintf(w, "umbilical\n")
+			chain, err := ev.(mtc.UmbilicalEvidence).Chain()
 			if err != nil {
 				return err
 			}
@@ -1015,8 +1015,8 @@ func main() {
 								Value: "empty",
 							},
 							&cli.StringFlag{
-								Name:  "roots",
-								Usage: "path to PEM-encode root store when X.509 chain evidence is required",
+								Name:  "umbilical-roots",
+								Usage: "path to PEM-encoded accepted roots for umbilical (X.509 chain) evidence",
 							},
 						},
 					},

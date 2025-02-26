@@ -34,12 +34,12 @@ type NewOpts struct {
 
 	// Fields below are optional.
 
-	SignatureScheme mtc.SignatureScheme
-	BatchDuration   time.Duration
-	Lifetime        time.Duration
-	StorageDuration time.Duration
-	EvidencePolicy  mtc.EvidencePolicyType
-	AcceptedRoots   []byte
+	SignatureScheme   mtc.SignatureScheme
+	BatchDuration     time.Duration
+	Lifetime          time.Duration
+	StorageDuration   time.Duration
+	EvidencePolicy    mtc.EvidencePolicyType
+	UmbilicalRootsPEM []byte
 }
 
 // Handle for exclusive access to a Merkle Tree CA state.
@@ -49,7 +49,7 @@ type Handle struct {
 	flock             lockfile.Lockfile
 	path              string
 	closed            bool
-	acceptedRoots     *x509.CertPool
+	umbilicalRoots    *x509.CertPool
 	revocationChecker *revocation.Checker
 
 	indices map[uint32]*Index
@@ -126,7 +126,9 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 	bw := bufio.NewWriter(w)
 
 	if err := it(func(ar mtc.AssertionRequest) error {
-		if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+		switch h.params.EvidencePolicy {
+		case mtc.EmptyEvidencePolicyType:
+		case mtc.UmbilicalEvidencePolicyType:
 			var (
 				err   error
 				chain []*x509.Certificate
@@ -134,8 +136,8 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 			// TODO this checks only the first matching evidence. Do we want to allow multiple
 			// of the same evidence type to be submitted, and should we check them all?
 			for _, ev := range ar.Evidence {
-				if ev.Type() == mtc.X509ChainEvidenceType {
-					chain, err = ev.(mtc.X509ChainEvidence).Chain()
+				if ev.Type() == mtc.UmbilicalEvidenceType {
+					chain, err = ev.(mtc.UmbilicalEvidence).Chain()
 					if err != nil {
 						return err
 					}
@@ -152,10 +154,12 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 				CA:     &h.params,
 				Number: h.params.ActiveBatches(time.Now()).End + 1,
 			}
-			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batch, chain, h.acceptedRoots, h.revocationChecker)
+			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batch, chain, h.umbilicalRoots, h.revocationChecker)
 			if err != nil {
 				return err
 			}
+		default:
+			return fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
 		}
 
 		buf, err := ar.MarshalBinary()
@@ -231,21 +235,25 @@ func Open(path string) (*Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
 	}
-	if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
+	switch h.params.EvidencePolicy {
+	case mtc.EmptyEvidencePolicyType:
+	case mtc.UmbilicalEvidencePolicyType:
 		h.revocationChecker, err = revocation.NewChecker(revocation.Config{Cache: h.revocationCachePath()})
 		if err != nil {
 			return nil, fmt.Errorf("creating revocation checker from %s: %w", h.revocationCachePath(), err)
 		}
-		h.acceptedRoots = x509.NewCertPool()
-		pemCerts, err := os.ReadFile(h.rootsPath())
+		h.umbilicalRoots = x509.NewCertPool()
+		pemCerts, err := os.ReadFile(h.umbilicalRootsPath())
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", h.rootsPath(), err)
+			return nil, fmt.Errorf("reading %s: %w", h.umbilicalRootsPath(), err)
 		}
 		// TODO use AddCertWithConstraint to deal with constrained roots:
 		// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
-		if !h.acceptedRoots.AppendCertsFromPEM(pemCerts) {
+		if !h.umbilicalRoots.AppendCertsFromPEM(pemCerts) {
 			return nil, fmt.Errorf("failed to append root certs")
 		}
+	default:
+		return nil, fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
 	}
 	return &h, nil
 }
@@ -266,8 +274,8 @@ func (h Handle) revocationCachePath() string {
 	return gopath.Join(h.path, "revocation-cache")
 }
 
-func (h Handle) rootsPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "roots")
+func (h Handle) umbilicalRootsPath() string {
+	return gopath.Join(h.path, "www", "mtc", "v1", "umbilical-roots.pem")
 }
 
 func (h Handle) treePath(number uint32) string {
@@ -1167,12 +1175,12 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	if opts.StorageDuration.Nanoseconds()%opts.BatchDuration.Nanoseconds() != 0 {
 		return nil, errors.New("StorageDuration has to be a multiple of BatchDuration")
 	}
-	if opts.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
-		if opts.AcceptedRoots == nil {
-			return nil, errors.New("AcceptedRoots must be set when x509 chain evidence is required")
+	if opts.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+		if opts.UmbilicalRootsPEM == nil {
+			return nil, errors.New("UmbilicalRoots is required with the 'umbilical' evidence policy")
 		}
-		if !x509.NewCertPool().AppendCertsFromPEM(opts.AcceptedRoots) {
-			return nil, errors.New("Failed to parse any PEM-encoded roots from AcceptedRoots")
+		if !x509.NewCertPool().AppendCertsFromPEM(opts.UmbilicalRootsPEM) {
+			return nil, errors.New("Failed to parse any PEM-encoded roots from UmbilicalRootsPEM")
 		}
 	}
 	h.params.ValidityWindowSize = uint64(opts.Lifetime.Nanoseconds() / opts.BatchDuration.Nanoseconds())
@@ -1251,9 +1259,9 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	}
 
 	// Accepted roots
-	if h.params.EvidencePolicy == mtc.RequireX509ChainEvidencePolicyType {
-		if err := os.WriteFile(h.rootsPath(), opts.AcceptedRoots, 0o644); err != nil {
-			return nil, fmt.Errorf("Writing %s: %w", h.rootsPath(), err)
+	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+		if err := os.WriteFile(h.umbilicalRootsPath(), opts.UmbilicalRootsPEM, 0o644); err != nil {
+			return nil, fmt.Errorf("Writing %s: %w", h.umbilicalRootsPath(), err)
 		}
 	}
 

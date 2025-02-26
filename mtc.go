@@ -58,7 +58,7 @@ type Claims struct {
 type EvidenceType uint16
 
 const (
-	X509ChainEvidenceType EvidenceType = iota
+	UmbilicalEvidenceType EvidenceType = iota
 )
 
 type EvidenceList []Evidence
@@ -68,7 +68,7 @@ type Evidence interface {
 	Info() []byte
 }
 
-type X509ChainEvidence []byte
+type UmbilicalEvidence []byte
 
 type UnknownEvidence struct {
 	typ  EvidenceType
@@ -78,8 +78,11 @@ type UnknownEvidence struct {
 type EvidencePolicyType uint16
 
 const (
+	// Policy requiring no evidence to queue an assertion request.
 	EmptyEvidencePolicyType EvidencePolicyType = iota
-	RequireX509ChainEvidencePolicyType
+
+	// Policy requiring an X509 chain to an accepted root to queue an assertion request.
+	UmbilicalEvidencePolicyType
 )
 
 // Represents a claim we do not how to interpret.
@@ -936,12 +939,12 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
-func (e X509ChainEvidence) Type() EvidenceType { return X509ChainEvidenceType }
-func (e X509ChainEvidence) Info() []byte       { return e }
-func (e X509ChainEvidence) Chain() ([]*x509.Certificate, error) {
+func (e UmbilicalEvidence) Type() EvidenceType { return UmbilicalEvidenceType }
+func (e UmbilicalEvidence) Info() []byte       { return e }
+func (e UmbilicalEvidence) Chain() ([]*x509.Certificate, error) {
 	return x509.ParseCertificates(e)
 }
-func NewX509ChainEvidence(certs []*x509.Certificate) (X509ChainEvidence, error) {
+func NewUmbilicalEvidence(certs []*x509.Certificate) (UmbilicalEvidence, error) {
 	var b cryptobyte.Builder
 	for _, cert := range certs {
 		b.AddBytes(cert.Raw)
@@ -1656,8 +1659,8 @@ func (el *EvidenceList) unmarshal(s *cryptobyte.String) error {
 		}
 
 		switch evidenceType {
-		case X509ChainEvidenceType:
-			*el = append(*el, X509ChainEvidence(evidenceInfo))
+		case UmbilicalEvidenceType:
+			*el = append(*el, UmbilicalEvidence(evidenceInfo))
 		default:
 			*el = append(*el, UnknownEvidence{
 				typ:  evidenceType,
