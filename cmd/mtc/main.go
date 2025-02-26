@@ -852,7 +852,10 @@ func handleInspectEvidence(cc *cli.Context) error {
 		func(_ int, el *mtc.EvidenceList) error {
 			count++
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-			writeEvidenceList(w, *el)
+			err := writeEvidenceList(w, *el)
+			if err != nil {
+				return err
+			}
 			w.Flush()
 			fmt.Printf("\n")
 			return nil
