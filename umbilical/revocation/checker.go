@@ -122,8 +122,9 @@ func (c *Checker) evictExpired() error {
 
 	if len(toRemove) == 0 {
 		slog.Info(
-			"revocation.Checker.evictExpired",
+			"revocation.Checker evicted expired CRLs",
 			"removed", 0,
+			"total", totalEntries,
 			"time", time.Since(startTime),
 		)
 		return nil
@@ -151,7 +152,7 @@ func (c *Checker) evictExpired() error {
 	}
 
 	slog.Info(
-		"revocation.Checker.evictExpired",
+		"revocation.Checker evicted expired CRLs",
 		"removed", removedEntries,
 		"total", totalEntries,
 		"time", time.Since(startTime),
