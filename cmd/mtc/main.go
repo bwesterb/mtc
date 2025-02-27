@@ -550,6 +550,10 @@ func handleCaNew(cc *cli.Context) error {
 
 	var umbilicalRoots []byte
 	if evPolicy == mtc.UmbilicalEvidencePolicyType {
+		if !cc.IsSet("umbilical-roots") {
+			return errors.New("umbilical-roots must be set")
+		}
+
 		umbilicalRoots, err = os.ReadFile(cc.String("umbilical-roots"))
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", cc.String("umbilical-roots"), err)
