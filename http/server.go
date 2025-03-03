@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/bwesterb/mtc"
@@ -15,25 +16,45 @@ import (
 
 type Server struct {
 	server *http.Server
+	CA     *ca.Handle
+	caPath string
+	WG     sync.WaitGroup // To wait on when CA is opened
 }
 
 func NewServer(caPath string, listenAddr string) *Server {
 
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(path.Join(caPath, "www")))))
-	mux.HandleFunc("/ca/queue", handleCaQueue(caPath))
-	mux.HandleFunc("/ca/cert", handleCaCert(caPath))
 
-	return &Server{
+	ret := &Server{
 		server: &http.Server{
 			Handler:      mux,
 			Addr:         listenAddr,
 			WriteTimeout: 15 * time.Second,
 			ReadTimeout:  15 * time.Second,
-		}}
+		},
+		caPath: caPath,
+	}
+	ret.WG.Add(1)
+
+	mux.HandleFunc("/ca/queue", ret.handleCaQueue())
+	mux.HandleFunc("/ca/cert", ret.handleCaCert())
+
+	return ret
 }
 
 func (s *Server) ListenAndServe() error {
+	var err error
+	s.CA, err = ca.Open(s.caPath)
+	if err != nil {
+		return fmt.Errorf("failed to open CA: %w", err)
+	}
+	s.WG.Done()
+	defer func() {
+		s.CA.Close()
+		s.WG.Add(1)
+	}()
+
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -79,21 +100,15 @@ func assertionRequestFromHTTP(r *http.Request) (*mtc.AssertionRequest, error) {
 	return ar, nil
 }
 
-func handleCaQueue(path string) func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCaQueue() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h, err := ca.Open(path)
-		if err != nil {
-			http.Error(w, "failed to open CA", http.StatusInternalServerError)
-			return
-		}
-		defer h.Close()
 		a, err := assertionRequestFromHTTP(r)
 		if err != nil {
 			http.Error(w, "invalid assertion", http.StatusBadRequest)
 			return
 		}
 
-		err = h.Queue(*a)
+		err = s.CA.Queue(*a)
 		if err != nil {
 			http.Error(w, "failed to queue assertion", http.StatusInternalServerError)
 			return
@@ -102,21 +117,15 @@ func handleCaQueue(path string) func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleCaCert(path string) func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCaCert() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h, err := ca.Open(path)
-		if err != nil {
-			http.Error(w, "failed to open CA", http.StatusInternalServerError)
-			return
-		}
-		defer h.Close()
 		a, err := assertionRequestFromHTTP(r)
 		if err != nil {
 			http.Error(w, "invalid assertion", http.StatusBadRequest)
 			return
 		}
 
-		cert, err := h.CertificateFor(a.Assertion)
+		cert, err := s.CA.CertificateFor(a.Assertion)
 		if err != nil {
 			http.Error(w, "failed to get certificate for assertion", http.StatusBadRequest)
 			return
