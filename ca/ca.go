@@ -254,6 +254,9 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 //
 // For each entry, if checksum is not nil, makes sure the assertion
 // matches the checksum
+//
+// On error some (but not necessarily all) assertions before the error
+// could be queued.
 func (h *Handle) QueueMultiple(
 	it func(yield func(ar mtc.AssertionRequest) error) error) error {
 	// We queue in batches so that we can release locks in between
