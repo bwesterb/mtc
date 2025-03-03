@@ -143,7 +143,7 @@ batch_duration         300        5m0s
 life_time              3600       1h0m0s
 storage_window_size    24         2h0m0s
 validity_window_size   12
-http_server            ca.example.com/path
+server_prefix          ca.example.com/path
 public_key fingerprint ml-dsa-87:85b5a617ef109e0a8d68a094c8b969f622ac4096c513fa0acd169c231ce2fad5
 ```
 
@@ -406,7 +406,7 @@ batch_duration     300    5m0s
 life_time       3600    1h0m0s
 storage_window_size  24     2h0m0s
 validity_window_size  12
-http_server      localhost:8080
+server_prefix    ca.example.com/path
 public_key fingerprint ml-dsa-87:be1903a366b462b7b4e0010120d4b38279bbf4e350559b95e93671dbc4b821fc
 ```
 

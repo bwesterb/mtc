@@ -513,18 +513,10 @@ func handleCaShowQueue(cc *cli.Context) error {
 }
 
 func handleCaServe(cc *cli.Context) error {
-	path := cc.String("ca-path")
-	listenAddr := cc.String("listen-addr")
-	if listenAddr == "" {
-		h, err := ca.Open(path)
-		if err != nil {
-			return err
-		}
-		listenAddr = h.Params().HttpServer
-		h.Close()
+	if !cc.IsSet("listen-addr") {
+		return errors.New("expect listen-addr to be specified")
 	}
-	s := NewServer(path, listenAddr)
-	return s.Serve()
+	return NewServer(cc.String("ca-path"), cc.String("listen-addr")).Serve()
 }
 
 func handleCaNew(cc *cli.Context) error {
@@ -563,8 +555,8 @@ func handleCaNew(cc *cli.Context) error {
 	h, err := ca.New(
 		cc.String("ca-path"),
 		ca.NewOpts{
-			Issuer:     oid,
-			HttpServer: cc.Args().Get(1),
+			Issuer:       oid,
+			ServerPrefix: cc.Args().Get(1),
 
 			BatchDuration:     cc.Duration("batch-duration"),
 			StorageDuration:   cc.Duration("storage-duration"),
@@ -965,7 +957,7 @@ func handleInspectCaParams(cc *cli.Context) error {
 	fmt.Fprintf(w, "storage_window_size\t%d\t%s\n", p.StorageWindowSize,
 		time.Second*time.Duration(p.BatchDuration*p.StorageWindowSize))
 	fmt.Fprintf(w, "validity_window_size\t%d\n", p.ValidityWindowSize)
-	fmt.Fprintf(w, "http_server\t%s\n", p.HttpServer)
+	fmt.Fprintf(w, "server_prefix\t%s\n", p.ServerPrefix)
 	fmt.Fprintf(
 		w,
 		"public_key fingerprint\t%s\n",
@@ -999,7 +991,7 @@ func main() {
 						Name:      "new",
 						Usage:     "creates a new CA",
 						Action:    handleCaNew,
-						ArgsUsage: "<issuer-oid> <http-server>",
+						ArgsUsage: "<issuer-oid> <server-prefix>",
 						Flags: []cli.Flag{
 							&cli.DurationFlag{
 								Name:    "batch-duration",
