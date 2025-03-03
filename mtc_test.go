@@ -85,7 +85,7 @@ func createTestCA() *CAParams {
 		BatchDuration:      1,
 		Lifetime:           10,
 		ValidityWindowSize: 10,
-		HttpServer:         "example.com",
+		ServerPrefix:       "ca.example.com/path",
 	}
 	return &ret
 }

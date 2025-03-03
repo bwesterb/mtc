@@ -29,7 +29,7 @@ type CAParams struct {
 	Lifetime           uint64
 	ValidityWindowSize uint64
 	StorageWindowSize  uint64
-	HttpServer         string
+	ServerPrefix       string
 	EvidencePolicy     EvidencePolicyType
 }
 
@@ -481,7 +481,7 @@ func (p *CAParams) MarshalBinary() ([]byte, error) {
 	b.AddUint64(p.ValidityWindowSize)
 	b.AddUint64(p.StorageWindowSize)
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
-		b.AddBytes([]byte(p.HttpServer))
+		b.AddBytes([]byte(p.ServerPrefix))
 	})
 	b.AddUint16(uint16(p.EvidencePolicy))
 	return b.Bytes()
@@ -490,11 +490,11 @@ func (p *CAParams) MarshalBinary() ([]byte, error) {
 func (p *CAParams) UnmarshalBinary(data []byte) error {
 	s := cryptobyte.String(data)
 	var (
-		issuerBuf     []byte
-		pkBuf         []byte
-		httpServerBuf []byte
-		sigScheme     SignatureScheme
-		err           error
+		issuerBuf       []byte
+		pkBuf           []byte
+		serverPrefixBuf []byte
+		sigScheme       SignatureScheme
+		err             error
 	)
 
 	if !s.ReadUint8LengthPrefixed((*cryptobyte.String)(&issuerBuf)) ||
@@ -506,7 +506,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 		!s.ReadUint64(&p.Lifetime) ||
 		!s.ReadUint64(&p.ValidityWindowSize) ||
 		!s.ReadUint64(&p.StorageWindowSize) ||
-		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&httpServerBuf)) ||
+		!s.ReadUint16LengthPrefixed((*cryptobyte.String)(&serverPrefixBuf)) ||
 		!s.ReadUint16((*uint16)(&p.EvidencePolicy)) {
 		return ErrTruncated
 	}
@@ -516,7 +516,7 @@ func (p *CAParams) UnmarshalBinary(data []byte) error {
 	}
 
 	p.Issuer = issuerBuf
-	p.HttpServer = string(httpServerBuf)
+	p.ServerPrefix = string(serverPrefixBuf)
 	p.PublicKey, err = UnmarshalVerifier(sigScheme, pkBuf)
 	if err != nil {
 		return err

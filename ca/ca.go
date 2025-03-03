@@ -30,8 +30,8 @@ var (
 )
 
 type NewOpts struct {
-	Issuer     mtc.RelativeOID
-	HttpServer string
+	Issuer       mtc.RelativeOID
+	ServerPrefix string
 
 	// Fields below are optional.
 
@@ -1337,7 +1337,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 
 	h.params.StartTime = uint64(time.Now().Unix())
 
-	h.params.HttpServer = opts.HttpServer
+	h.params.ServerPrefix = opts.ServerPrefix
 	h.params.Issuer = opts.Issuer
 	h.params.EvidencePolicy = opts.EvidencePolicy
 
