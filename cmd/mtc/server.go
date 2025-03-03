@@ -9,20 +9,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bwesterb/mtc/ca"
 	"github.com/bwesterb/mtc/http"
 	"golang.org/x/sync/errgroup"
 )
 
 type Server struct {
-	path       string
-	listenAddr string
+	srv *http.Server
 }
 
 func NewServer(path, listenAddr string) *Server {
 	return &Server{
-		path:       path,
-		listenAddr: listenAddr,
+		srv: http.NewServer(path, listenAddr),
 	}
 }
 
@@ -30,30 +27,26 @@ func (s *Server) Serve() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill, syscall.SIGQUIT, syscall.SIGTERM)
 	defer cancel()
 
-	slog.Info("Starting server", slog.Any("listenAddr", s.listenAddr))
-
-	srv := http.NewServer(s.path, s.listenAddr)
-
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
 		<-ctx.Done()
 		slog.Info("context done, preparing to exit")
-		if err := srv.Shutdown(ctx); err != nil {
+		if err := s.srv.Shutdown(ctx); err != nil {
 			slog.Error("could not gracefully close server", slog.Any("err", err))
 		}
 		return nil
 	})
 
 	g.Go(func() error {
-		if err := srv.ListenAndServe(); err != nil {
+		if err := s.srv.ListenAndServe(); err != nil {
 			return fmt.Errorf("could not start server: %w", err)
 		}
 		return nil
 	})
 
 	g.Go(func() error {
-		if err := issuanceLoop(s.path, ctx); err != nil {
+		if err := s.issuanceLoop(ctx); err != nil {
 			return fmt.Errorf("could not start issuance loop: %w", err)
 		}
 		return nil
@@ -66,17 +59,13 @@ func (s *Server) Serve() error {
 	return nil
 }
 
-func issuanceLoop(path string, ctx context.Context) error {
-	h, err := ca.Open(path)
+func (s *Server) issuanceLoop(ctx context.Context) error {
+	s.srv.WG.Wait()
+	params := s.srv.CA.Params()
+	err := s.srv.CA.Issue()
 	if err != nil {
 		return err
 	}
-	params := h.Params()
-	err = h.Issue()
-	if err != nil {
-		return err
-	}
-	h.Close()
 	for {
 		batchTime := params.NextBatchAt(time.Now())
 		now := time.Now()
@@ -89,17 +78,8 @@ func issuanceLoop(path string, ctx context.Context) error {
 			}
 		}
 
-		if err = issueOnce(path); err != nil {
+		if err = s.srv.CA.Issue(); err != nil {
 			return err
 		}
 	}
-}
-
-func issueOnce(path string) error {
-	h, err := ca.Open(path)
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	return h.Issue()
 }

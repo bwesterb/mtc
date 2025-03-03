@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/bwesterb/mtc"
@@ -44,19 +45,27 @@ type NewOpts struct {
 
 // Handle for exclusive access to a Merkle Tree CA state.
 type Handle struct {
-	params            mtc.CAParams
-	signer            mtc.Signer
-	flock             lockfile.Lockfile
-	path              string
-	closed            bool
-	umbilicalRoots    *x509.CertPool
+	// Covered by own lock
 	revocationChecker *revocation.Checker
 
-	indices map[uint32]*Index
-	aas     map[uint32]*os.File
-	evs     map[uint32]*os.File
-	trees   map[uint32]*Tree
+	// Immutable
+	params mtc.CAParams
+	path   string
 
+	// Mutable covered by RWLock
+	mux            sync.RWMutex
+	signer         mtc.Signer
+	flock          lockfile.Lockfile
+	closed         bool
+	umbilicalRoots *x509.CertPool
+
+	// Caches. Access requires either write lock on mux, or a read lock on mux
+	// and a lock on cacheMux.
+	cacheMux          sync.Mutex
+	indices           map[uint32]*Index
+	aas               map[uint32]*os.File
+	evs               map[uint32]*os.File
+	trees             map[uint32]*Tree
 	batchNumbersCache []uint32 // cache for existing batches
 }
 
@@ -65,6 +74,9 @@ func (ca *Handle) Params() mtc.CAParams {
 }
 
 func (ca *Handle) Close() error {
+	ca.mux.Lock()
+	defer ca.mux.Unlock()
+
 	if ca.closed {
 		return ErrClosed
 	}
@@ -94,6 +106,7 @@ func (ca *Handle) Close() error {
 }
 
 // Drops all entries from the queue
+// Requires write lock on mux.
 func (h *Handle) dropQueue() error {
 	if h.closed {
 		return ErrClosed
@@ -109,14 +122,97 @@ func (h *Handle) dropQueue() error {
 	return nil
 }
 
-// Queue multiple assertions for publication.
-//
-// For each entry, if checksum is not nil, makes sure the assertion
-// matches the checksum
-func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error) error) error {
+func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
+	h.mux.RLock()
+	rlocked := true
+	wlocked := false
+	defer func() {
+		if rlocked {
+			h.mux.RUnlock()
+		} else if wlocked {
+			h.mux.Unlock()
+		}
+	}()
+
 	if h.closed {
 		return ErrClosed
 	}
+
+	nextBatch := mtc.Batch{
+		Number: h.params.ActiveBatches(time.Now()).End + 1,
+		CA:     &h.params,
+	}
+	batchStart, batchEnd := nextBatch.ValidityInterval()
+	notAfter := make([]time.Time, len(ars)) // Corrected notAfter time.
+
+	// We release the lock so that the potentially slow revocation checks
+	// don't block the whole CA. First copy the info we need from the Handle.
+	umbilicalRoots := h.umbilicalRoots.Clone()
+	evidencePolicy := h.params.EvidencePolicy
+	h.mux.RUnlock()
+	rlocked = false
+
+	for i, ar := range ars {
+		// Check that the assertion matches the checksum.
+		err := ar.Check()
+		if err != nil {
+			return err
+		}
+		notAfter[i] = ar.NotAfter
+		if notAfter[i].IsZero() || batchEnd.Before(notAfter[i]) {
+			notAfter[i] = batchEnd
+		}
+
+		switch evidencePolicy {
+		case mtc.EmptyEvidencePolicyType:
+		case mtc.UmbilicalEvidencePolicyType:
+			var (
+				err   error
+				chain []*x509.Certificate
+			)
+			// TODO this checks only the first matching evidence. Do we want
+			// to allow multiple of the same evidence type to be submitted,
+			// and should we check them all?
+			for _, ev := range ar.Evidence {
+				if ev.Type() != mtc.UmbilicalEvidenceType {
+					continue
+				}
+
+				chain, err = ev.(mtc.UmbilicalEvidence).Chain()
+				if err != nil {
+					return err
+				}
+				break
+			}
+			if chain == nil {
+				return errors.New("missing x509 chain evidence")
+			}
+			if notAfter[i].IsZero() || chain[0].NotAfter.Before(notAfter[i]) {
+				notAfter[i] = chain[0].NotAfter
+			}
+
+			_, err = umbilical.CheckAssertionValidForX509(
+				ar.Assertion,
+				batchStart,
+				notAfter[i],
+				chain,
+				umbilicalRoots,
+				h.revocationChecker,
+			)
+			if err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf(
+				"unknown evidence policy: %d",
+				evidencePolicy,
+			)
+		}
+	}
+
+	// All good. We're ready to write.
+	h.mux.Lock()
+	wlocked = true
 
 	w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -125,58 +221,10 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 	defer w.Close()
 	bw := bufio.NewWriter(w)
 
-	nextBatch := mtc.Batch{
-		Number: h.params.ActiveBatches(time.Now()).End + 1,
-		CA:     &h.params,
-	}
-	batchStart, batchEnd := nextBatch.ValidityInterval()
-
-	if err := it(func(ar mtc.AssertionRequest) error {
-		// Check that the assertion matches the checksum.
-		err = ar.Check()
-		if err != nil {
-			return err
-		}
-		notAfter := ar.NotAfter
-		if notAfter.IsZero() || batchEnd.Before(notAfter) {
-			notAfter = batchEnd
-		}
-		switch h.params.EvidencePolicy {
-		case mtc.EmptyEvidencePolicyType:
-		case mtc.UmbilicalEvidencePolicyType:
-			var (
-				err   error
-				chain []*x509.Certificate
-			)
-			// TODO this checks only the first matching evidence. Do we want to allow multiple
-			// of the same evidence type to be submitted, and should we check them all?
-			for _, ev := range ar.Evidence {
-				if ev.Type() == mtc.UmbilicalEvidenceType {
-					chain, err = ev.(mtc.UmbilicalEvidence).Chain()
-					if err != nil {
-						return err
-					}
-					break
-				}
-			}
-			if chain == nil {
-				return errors.New("missing x509 chain evidence")
-			}
-			if notAfter.IsZero() || chain[0].NotAfter.Before(notAfter) {
-				notAfter = chain[0].NotAfter
-			}
-			_, err = umbilical.CheckAssertionValidForX509(ar.Assertion, batchStart, notAfter, chain, h.umbilicalRoots, h.revocationChecker)
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
-		}
-
-		if notAfter != ar.NotAfter {
-			ar.NotAfter = notAfter
-			// Recompute the checksum.
-			ar.Checksum = nil
+	for i, ar := range ars {
+		if notAfter[i] != ar.NotAfter {
+			ar.NotAfter = notAfter[i]
+			ar.Checksum = nil // Recompute the checksum.
 		}
 
 		buf, err := ar.MarshalBinary()
@@ -197,13 +245,47 @@ func (h *Handle) QueueMultiple(it func(yield func(ar mtc.AssertionRequest) error
 		if err != nil {
 			return fmt.Errorf("writing to queue: %w", err)
 		}
+	}
+
+	return bw.Flush()
+}
+
+// Queue multiple assertions for publication.
+//
+// For each entry, if checksum is not nil, makes sure the assertion
+// matches the checksum
+//
+// On error some (but not necessarily all) assertions before the error
+// could be queued.
+func (h *Handle) QueueMultiple(
+	it func(yield func(ar mtc.AssertionRequest) error) error) error {
+	// We queue in batches so that we can release locks in between
+	// for revocation checks.
+
+	const batchSize = 1024
+
+	ars := make([]mtc.AssertionRequest, 0, batchSize)
+	if err := it(func(ar mtc.AssertionRequest) error {
+		ars = append(ars, ar)
+
+		if len(ars) == batchSize {
+			if err := h.queueMultiple(ars); err != nil {
+				return err
+			}
+
+			ars = ars[:0]
+		}
 
 		return nil
 	}); err != nil {
 		return err
 	}
 
-	return bw.Flush()
+	if len(ars) == 0 {
+		return nil
+	}
+
+	return h.queueMultiple(ars)
 }
 
 // Queue assertion for publication.
@@ -226,7 +308,7 @@ func Open(path string) (*Handle, error) {
 		evs:     make(map[uint32]*os.File),
 		trees:   make(map[uint32]*Tree),
 	}
-	if err := h.lock(); err != nil {
+	if err := h.lockFolder(); err != nil {
 		return nil, err
 	}
 	paramsBuf, err := os.ReadFile(h.paramsPath())
@@ -255,9 +337,15 @@ func Open(path string) (*Handle, error) {
 	switch h.params.EvidencePolicy {
 	case mtc.EmptyEvidencePolicyType:
 	case mtc.UmbilicalEvidencePolicyType:
-		h.revocationChecker, err = revocation.NewChecker(revocation.Config{Cache: h.revocationCachePath()})
+		h.revocationChecker, err = revocation.NewChecker(revocation.Config{
+			Cache: h.revocationCachePath(),
+		})
 		if err != nil {
-			return nil, fmt.Errorf("creating revocation checker from %s: %w", h.revocationCachePath(), err)
+			return nil, fmt.Errorf(
+				"creating revocation checker from %s: %w",
+				h.revocationCachePath(),
+				err,
+			)
 		}
 		h.umbilicalRoots = x509.NewCertPool()
 		pemCerts, err := os.ReadFile(h.umbilicalRootsPath())
@@ -346,7 +434,7 @@ func (h Handle) getSignedValidityWindow(number uint32) (
 	return &w, nil
 }
 
-func (h *Handle) lock() error {
+func (h *Handle) lockFolder() error {
 	lockPath := gopath.Join(h.path, "lock")
 	absLockPath, err := filepath.Abs(lockPath)
 	if err != nil {
@@ -365,6 +453,9 @@ func (h *Handle) lock() error {
 
 // Returns a sorted list of batches for which a directory was created.
 func (h *Handle) listBatchNumbers() ([]uint32, error) {
+	h.cacheMux.Lock()
+	defer h.cacheMux.Unlock()
+
 	if h.batchNumbersCache != nil {
 		return h.batchNumbersCache, nil
 	}
@@ -416,7 +507,16 @@ func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
 }
 
 // Calls f on each assertion queued to be published.
+//
+// Because of locked internal state, f cannot call any function on h.
 func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
+	h.mux.RLock()
+	defer h.mux.RUnlock()
+	return h.walkQueue(f)
+}
+
+// Same as WalkQueue, but asummes read lock on mux.
+func (h *Handle) walkQueue(f func(mtc.AssertionRequest) error) error {
 	r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("Opening queue: %w", err)
@@ -462,6 +562,8 @@ func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
 }
 
 // Drop batches that don't need to be stored anymore.
+//
+// Requires writelock on mux.
 func (h *Handle) dropOldBatches(dt time.Time) error {
 	expectedStored := h.params.StoredBatches(dt)
 	existingBatches, err := h.listBatchRange()
@@ -538,6 +640,9 @@ func (h *Handle) closeBatch(batch uint32) error {
 
 // Returns the AbridgedAssertions index for the given batch.
 func (ca *Handle) indexFor(batch uint32) (*Index, error) {
+	ca.cacheMux.Lock()
+	defer ca.cacheMux.Unlock()
+
 	if idx, ok := ca.indices[batch]; ok {
 		return idx, nil
 	}
@@ -554,6 +659,9 @@ func (ca *Handle) indexFor(batch uint32) (*Index, error) {
 
 // Return the Tree handle for the given batch.
 func (ca *Handle) treeFor(batch uint32) (*Tree, error) {
+	ca.cacheMux.Lock()
+	defer ca.cacheMux.Unlock()
+
 	if t, ok := ca.trees[batch]; ok {
 		return t, nil
 	}
@@ -570,6 +678,9 @@ func (ca *Handle) treeFor(batch uint32) (*Tree, error) {
 
 // Returns file handle to abridged-assertions file for the given batch.
 func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
+	ca.cacheMux.Lock()
+	defer ca.cacheMux.Unlock()
+
 	if r, ok := ca.aas[batch]; ok {
 		return r, nil
 	}
@@ -586,6 +697,9 @@ func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
 
 // Returns file handle to evidence file for the given batch.
 func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
+	ca.cacheMux.Lock()
+	defer ca.cacheMux.Unlock()
+
 	if r, ok := ca.evs[batch]; ok {
 		return r, nil
 	}
@@ -611,6 +725,9 @@ var errShortCircuit = errors.New("short circuit")
 
 // Returns the certificate for an issued assertion
 func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
+	ca.mux.RLock()
+	defer ca.mux.RUnlock()
+
 	aa := a.Abridge()
 	var key [mtc.HashLen]byte
 	err := aa.Key(key[:])
@@ -661,7 +778,7 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 		return nil, fmt.Errorf("creating authentication path: %w", err)
 	}
 
-	p := ca.Params()
+	p := ca.params
 	return &mtc.BikeshedCertificate{
 		Assertion: a,
 		Proof: mtc.NewMerkleTreeProof(
@@ -674,6 +791,9 @@ func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, err
 
 // Returns the evidence for an issued assertion
 func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
+	ca.mux.RLock()
+	defer ca.mux.RUnlock()
+
 	aa := a.Abridge()
 	var key [mtc.HashLen]byte
 	err := aa.Key(key[:])
@@ -753,6 +873,9 @@ func (ca *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error
 //
 // Drops batches that fall outside of storage window.
 func (h *Handle) Issue() error {
+	h.mux.Lock()
+	defer h.mux.Unlock()
+
 	if h.closed {
 		return ErrClosed
 	}
@@ -1025,7 +1148,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	evBW := bufio.NewWriter(evW)
 
 	if !empty {
-		err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
+		err = h.walkQueue(func(ar mtc.AssertionRequest) error {
 			// Skip assertions that are already expired.
 			if start, _ := batch.ValidityInterval(); ar.NotAfter.Before(start) {
 				return nil
@@ -1249,7 +1372,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	}
 
 	// Now, attain a file lock.
-	if err := h.lock(); err != nil {
+	if err := h.lockFolder(); err != nil {
 		return nil, err
 	}
 	unlock := true
