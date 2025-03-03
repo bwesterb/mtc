@@ -72,7 +72,7 @@ func (h *Index) Close() error {
 // Look up hash in the index. If not found, returns nil.
 func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 	const hl = int(mtc.HashLen)
-	el := hl + 16 // length of indexEntry
+	el := hl + 24 // length of indexEntry
 
 	if len(hash) != hl {
 		panic(fmt.Sprintf("hash must be %d bytes", hl))
@@ -130,7 +130,7 @@ func (h *Index) Search(hash []byte) (*IndexSearchResult, error) {
 		switch tmp.Cmp(&needle) {
 		case 0: // we found it
 			var (
-				val [16]byte
+				val [24]byte
 				ret IndexSearchResult
 			)
 			_, err := h.r.ReadAt(val[:], int64(el*intGuess+hl))
