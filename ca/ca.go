@@ -363,59 +363,59 @@ func Open(path string) (*Handle, error) {
 	return &h, nil
 }
 
-func (h Handle) skPath() string {
+func (h *Handle) skPath() string {
 	return gopath.Join(h.path, "signing.key")
 }
 
-func (h Handle) paramsPath() string {
+func (h *Handle) paramsPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "ca-params")
 }
 
-func (h Handle) queuePath() string {
+func (h *Handle) queuePath() string {
 	return gopath.Join(h.path, "queue")
 }
 
-func (h Handle) revocationCachePath() string {
+func (h *Handle) revocationCachePath() string {
 	return gopath.Join(h.path, "revocation-cache")
 }
 
-func (h Handle) umbilicalRootsPath() string {
+func (h *Handle) umbilicalRootsPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "umbilical-roots.pem")
 }
 
-func (h Handle) treePath(number uint32) string {
+func (h *Handle) treePath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "tree")
 }
 
-func (h Handle) indexPath(number uint32) string {
+func (h *Handle) indexPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "index")
 }
 
-func (h Handle) aaPath(number uint32) string {
+func (h *Handle) aaPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "abridged-assertions")
 }
 
-func (h Handle) evPath(number uint32) string {
+func (h *Handle) evPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "evidence")
 }
 
-func (h Handle) batchPath(number uint32) string {
+func (h *Handle) batchPath(number uint32) string {
 	return gopath.Join(h.batchesPath(), fmt.Sprintf("%d", number))
 }
 
-func (h Handle) latestBatchPath() string {
+func (h *Handle) latestBatchPath() string {
 	return gopath.Join(h.batchesPath(), "latest")
 }
 
-func (h Handle) batchesPath() string {
+func (h *Handle) batchesPath() string {
 	return gopath.Join(h.path, "www", "mtc", "v1", "batches")
 }
 
-func (h Handle) tmpPath() string {
+func (h *Handle) tmpPath() string {
 	return gopath.Join(h.path, "tmp")
 }
 
-func (h Handle) getSignedValidityWindow(number uint32) (
+func (h *Handle) getSignedValidityWindow(number uint32) (
 	*mtc.SignedValidityWindow, error) {
 	var w mtc.SignedValidityWindow
 
