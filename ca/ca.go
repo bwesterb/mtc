@@ -123,13 +123,10 @@ func (h *Handle) dropQueue() error {
 }
 
 func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
-	h.mux.RLock()
-	rlocked := true
-	wlocked := false
+	h.mux.Lock()
+	locked := true
 	defer func() {
-		if rlocked {
-			h.mux.RUnlock()
-		} else if wlocked {
+		if locked {
 			h.mux.Unlock()
 		}
 	}()
@@ -147,10 +144,14 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 
 	// We release the lock so that the potentially slow revocation checks
 	// don't block the whole CA. First copy the info we need from the Handle.
-	umbilicalRoots := h.umbilicalRoots.Clone()
 	evidencePolicy := h.params.EvidencePolicy
-	h.mux.RUnlock()
-	rlocked = false
+	revChecker, umbRoots, err := h.getRevocationCheckerAndUmbilicalRoots()
+	if err != nil {
+		return err
+	}
+
+	h.mux.Unlock()
+	locked = false
 
 	for i, ar := range ars {
 		// Check that the assertion matches the checksum.
@@ -196,8 +197,8 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 				batchStart,
 				notAfter[i],
 				chain,
-				umbilicalRoots,
-				h.revocationChecker,
+				umbRoots,
+				revChecker,
 			)
 			if err != nil {
 				return err
@@ -212,7 +213,7 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 
 	// All good. We're ready to write.
 	h.mux.Lock()
-	wlocked = true
+	locked = true
 
 	w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -297,6 +298,46 @@ func (h *Handle) Queue(ar mtc.AssertionRequest) error {
 	})
 }
 
+// Returns a revocation checker and a copy of the trusted umbilical roots.
+//
+// Requires write lock on mux.
+func (h *Handle) getRevocationCheckerAndUmbilicalRoots() (
+	*revocation.Checker, *x509.CertPool, error) {
+	if h.params.EvidencePolicy != mtc.UmbilicalEvidencePolicyType {
+		return nil, nil, nil
+	}
+
+	if h.revocationChecker != nil {
+		return h.revocationChecker, h.umbilicalRoots.Clone(), nil
+	}
+
+	revocationChecker, err := revocation.NewChecker(revocation.Config{
+		Cache: h.revocationCachePath(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"creating revocation checker from %s: %w",
+			h.revocationCachePath(),
+			err,
+		)
+	}
+	umbilicalRoots := x509.NewCertPool()
+	pemCerts, err := os.ReadFile(h.umbilicalRootsPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading %s: %w", h.umbilicalRootsPath(), err)
+	}
+	// TODO use AddCertWithConstraint to deal with constrained roots:
+	// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
+	if !umbilicalRoots.AppendCertsFromPEM(pemCerts) {
+		return nil, nil, fmt.Errorf("failed to append root certs")
+	}
+
+	h.revocationChecker = revocationChecker
+	h.umbilicalRoots = umbilicalRoots
+
+	return h.revocationChecker, h.umbilicalRoots, nil
+}
+
 // Load private state of Merkle Tree CA, and acquire lock.
 //
 // Call Handle.Close() when done.
@@ -335,28 +376,7 @@ func Open(path string) (*Handle, error) {
 		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
 	}
 	switch h.params.EvidencePolicy {
-	case mtc.EmptyEvidencePolicyType:
-	case mtc.UmbilicalEvidencePolicyType:
-		h.revocationChecker, err = revocation.NewChecker(revocation.Config{
-			Cache: h.revocationCachePath(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf(
-				"creating revocation checker from %s: %w",
-				h.revocationCachePath(),
-				err,
-			)
-		}
-		h.umbilicalRoots = x509.NewCertPool()
-		pemCerts, err := os.ReadFile(h.umbilicalRootsPath())
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", h.umbilicalRootsPath(), err)
-		}
-		// TODO use AddCertWithConstraint to deal with constrained roots:
-		// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
-		if !h.umbilicalRoots.AppendCertsFromPEM(pemCerts) {
-			return nil, fmt.Errorf("failed to append root certs")
-		}
+	case mtc.EmptyEvidencePolicyType, mtc.UmbilicalEvidencePolicyType:
 	default:
 		return nil, fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
 	}
