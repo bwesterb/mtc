@@ -376,8 +376,7 @@ func Open(path string) (*Handle, error) {
 		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
 	}
 	switch h.params.EvidencePolicy {
-	case mtc.EmptyEvidencePolicyType:
-	case mtc.UmbilicalEvidencePolicyType:
+	case mtc.EmptyEvidencePolicyType, mtc.UmbilicalEvidencePolicyType:
 	default:
 		return nil, fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
 	}
