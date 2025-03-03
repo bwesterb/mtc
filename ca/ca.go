@@ -147,8 +147,7 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 
 	// We release the lock so that the potentially slow revocation checks
 	// don't block the whole CA. First copy the info we need from the Handle.
-	umbilicalRoots := h.umbilicalRoots
-	revocationChecker := h.revocationChecker
+	umbilicalRoots := h.umbilicalRoots.Clone()
 	evidencePolicy := h.params.EvidencePolicy
 	h.mux.RUnlock()
 	rlocked = false
@@ -198,13 +197,16 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 				notAfter[i],
 				chain,
 				umbilicalRoots,
-				revocationChecker,
+				h.revocationChecker,
 			)
 			if err != nil {
 				return err
 			}
 		default:
-			return fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
+			return fmt.Errorf(
+				"unknown evidence policy: %d",
+				evidencePolicy,
+			)
 		}
 	}
 
