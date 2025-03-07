@@ -25,7 +25,7 @@
 //	+-------------+---------------+---------------+
 //
 // key is the SHA-256 hash of the blob (although presently that fact is not
-// used;) length is the size of the blob in bytes and offset points to
+// used); length is the size of the blob in bytes and offset points to
 // the blob in the data section.
 //
 // NOTE There are several improvements that can be made to the format to
