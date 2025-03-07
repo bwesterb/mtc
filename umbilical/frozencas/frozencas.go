@@ -11,6 +11,9 @@
 //	| index  |
 //	+--------+
 //
+// We put the index after the data so that we write the data first, and
+// compute the index afterwards.
+//
 // The header is given by.
 //
 //	+---------------------+--------------+
