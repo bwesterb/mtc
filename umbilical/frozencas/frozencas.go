@@ -226,11 +226,6 @@ func (h *Handle) Get(hash []byte) ([]byte, error) {
 				return nil, err
 			}
 
-			// hash2 := sha256.Sum256(blob)
-			// if !bytes.Equal(hash2[:], hash) {
-			// 	return nil, errors.New("corrupted blob")
-			// }
-
 			return blob, nil
 		case -1: // tmp < needle
 			a.Set(&tmp)
