@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
 )
 
 // CAParams holds the public parameters of a Merkle Tree CA
@@ -59,6 +60,7 @@ type EvidenceType uint16
 
 const (
 	UmbilicalEvidenceType EvidenceType = iota
+	CompressedUmbilicalEvidenceType
 )
 
 type EvidenceList []Evidence
@@ -69,6 +71,7 @@ type Evidence interface {
 }
 
 type UmbilicalEvidence []byte
+type CompressedUmbilicalEvidence [][32]byte
 
 type UnknownEvidence struct {
 	typ  EvidenceType
@@ -940,10 +943,56 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
+func (e CompressedUmbilicalEvidence) Type() EvidenceType {
+	return CompressedUmbilicalEvidenceType
+}
+func (e CompressedUmbilicalEvidence) Info() []byte {
+	ret := make([]byte, len(e)*32)
+	for i, key := range e {
+		copy(ret[32*i:], key[:])
+	}
+	return ret
+}
+func (e CompressedUmbilicalEvidence) Chain() [][32]byte {
+	return e
+}
+func (e *CompressedUmbilicalEvidence) UnmarshalBinary(buf []byte) error {
+	if len(buf)&31 != 0 {
+		return errors.New("CompressedUmbilicalEvidence must be multiple of 32 bytes")
+	}
+	*e = make([][32]byte, len(buf)>>5)
+	for i := range len(buf) >> 5 {
+		copy((*e)[i][:], buf[32*i:32*(i+1)])
+	}
+	return nil
+}
+func NewCompressedUmbilicalEvidence(certs [][32]byte) (
+	CompressedUmbilicalEvidence, error) {
+	return certs, nil
+}
+
 func (e UmbilicalEvidence) Type() EvidenceType { return UmbilicalEvidenceType }
 func (e UmbilicalEvidence) Info() []byte       { return e }
 func (e UmbilicalEvidence) Chain() ([]*x509.Certificate, error) {
 	return x509.ParseCertificates(e)
+}
+func (e UmbilicalEvidence) RawChain() ([][]byte, error) {
+	// Instead of completely parsing the certificates, we'll read the
+	// outer SEQUENCE tag to figure out the boundaries.
+	s := cryptobyte.String(e)
+	offset := 0
+	prev := len(s)
+	var ret [][]byte
+	for !s.Empty() {
+		if !s.SkipASN1(asn1.SEQUENCE) {
+			return nil, errors.New("UmbilicalEvidence: unexpected ASN.1 tag")
+		}
+		length := prev - len(s)
+		prev = len(s)
+		ret = append(ret, e[offset:offset+length])
+		offset += length
+	}
+	return ret, nil
 }
 func NewUmbilicalEvidence(certs []*x509.Certificate) (UmbilicalEvidence, error) {
 	var b cryptobyte.Builder
@@ -1668,6 +1717,12 @@ func (el *EvidenceList) unmarshal(s *cryptobyte.String) error {
 		}
 
 		switch evidenceType {
+		case CompressedUmbilicalEvidenceType:
+			var e CompressedUmbilicalEvidence
+			if err := e.UnmarshalBinary(evidenceInfo); err != nil {
+				return err
+			}
+			*el = append(*el, e)
 		case UmbilicalEvidenceType:
 			*el = append(*el, UmbilicalEvidence(evidenceInfo))
 		default:

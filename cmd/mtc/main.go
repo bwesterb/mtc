@@ -8,6 +8,7 @@ import (
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
 	"github.com/bwesterb/mtc/umbilical"
+	"github.com/bwesterb/mtc/umbilical/frozencas"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
 
@@ -27,6 +28,7 @@ import (
 var (
 	errNoCaParams = errors.New("missing ca-params flag")
 	errArgs       = errors.New("Wrong number of arguments")
+	errNotFound   = errors.New("not found")
 	fCpuProfile   *os.File
 	evPolicyMap   = map[string]mtc.EvidencePolicyType{
 		"empty":     mtc.EmptyEvidencePolicyType,
@@ -650,6 +652,60 @@ func handleInspectSignedValidityWindow(cc *cli.Context) error {
 	return nil
 }
 
+func handleInspectUC(cc *cli.Context) error {
+	if cc.Args().Len() != 1 {
+		return errArgs
+	}
+
+	uc, err := frozencas.Open(cc.Args().Get(0))
+	if err != nil {
+		return err
+	}
+	defer uc.Close()
+
+	if cc.IsSet("key") {
+		key, err := hex.DecodeString(cc.String("key"))
+		if err != nil {
+			return err
+		}
+		blob, err := uc.Get(key)
+		if err != nil {
+			return err
+		}
+
+		if blob == nil {
+			return errNotFound
+		}
+
+		cert, err := x509.ParseCertificate(blob)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("subject\t%s\n", cert.Subject.String())
+		fmt.Printf("issuer\t%s\n", cert.Issuer.String())
+		fmt.Printf("serial_no\t%x\n", cert.SerialNumber)
+		fmt.Printf("not_before\t%s\n", cert.NotBefore)
+		fmt.Printf("not_after\t%s\n", cert.NotAfter)
+
+		return nil
+	}
+
+	total := 0
+	entries, err := uc.Entries()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%64s %7s %7s\n", "key", "offset", "length")
+	for _, entry := range entries {
+		fmt.Printf("%x %7d %7d\n", entry.Key, entry.Offset, entry.Length)
+		total++
+	}
+
+	fmt.Printf("\ntotal number of entries: %d\n", total)
+	return nil
+}
+
 func handleInspectIndex(cc *cli.Context) error {
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
@@ -745,6 +801,13 @@ func writeEvidenceList(w *tabwriter.Writer, el mtc.EvidenceList) error {
 	fmt.Fprintf(w, "evidence-list (%d entries)\n", len(el))
 	for _, ev := range el {
 		switch ev.Type() {
+		case mtc.CompressedUmbilicalEvidenceType:
+			fmt.Fprintf(w, "compressed umbilical\n")
+			chain := ev.(mtc.CompressedUmbilicalEvidence).Chain()
+			for _, cert := range chain {
+				fmt.Fprintf(w, " %x\n", cert)
+			}
+
 		case mtc.UmbilicalEvidenceType:
 			fmt.Fprintf(w, "umbilical\n")
 			chain, err := ev.(mtc.UmbilicalEvidence).Chain()
@@ -1137,6 +1200,19 @@ func main() {
 						Usage:     "parses a certificate",
 						Action:    handleInspectCert,
 						ArgsUsage: "[path]",
+					},
+					{
+						Name:      "umbilical-certificates",
+						Usage:     "parses batch's umbilical-certificates file",
+						Action:    handleInspectUC,
+						ArgsUsage: "path",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:    "key",
+								Usage:   "key to look up",
+								Aliases: []string{"k"},
+							},
+						},
 					},
 				},
 				Flags: []cli.Flag{

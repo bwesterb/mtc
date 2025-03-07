@@ -19,6 +19,7 @@ import (
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/umbilical"
+	"github.com/bwesterb/mtc/umbilical/frozencas"
 	"github.com/bwesterb/mtc/umbilical/revocation"
 
 	"github.com/nightlyone/lockfile"
@@ -62,11 +63,12 @@ type Handle struct {
 	// Caches. Access requires either write lock on mux, or a read lock on mux
 	// and a lock on cacheMux.
 	cacheMux          sync.Mutex
-	indices           map[uint32]*Index
-	aas               map[uint32]*os.File
-	evs               map[uint32]*os.File
-	trees             map[uint32]*Tree
-	batchNumbersCache []uint32 // cache for existing batches
+	indices           map[uint32]*Index            // index files
+	aas               map[uint32]*os.File          // abridged-assertions files
+	evs               map[uint32]*os.File          // evidence files
+	trees             map[uint32]*Tree             // tree files
+	ucs               map[uint32]*frozencas.Handle // umbilical-certificates
+	batchNumbersCache []uint32                     // cache for existing batches
 }
 
 func (ca *Handle) Params() mtc.CAParams {
@@ -99,6 +101,10 @@ func (ca *Handle) Close() error {
 
 	for _, t := range ca.trees {
 		t.Close()
+	}
+
+	for _, r := range ca.ucs {
+		r.Close()
 	}
 
 	ca.closed = true
@@ -347,6 +353,7 @@ func Open(path string) (*Handle, error) {
 		indices: make(map[uint32]*Index),
 		aas:     make(map[uint32]*os.File),
 		evs:     make(map[uint32]*os.File),
+		ucs:     make(map[uint32]*frozencas.Handle),
 		trees:   make(map[uint32]*Tree),
 	}
 	if err := h.lockFolder(); err != nil {
@@ -409,6 +416,10 @@ func (h *Handle) treePath(number uint32) string {
 
 func (h *Handle) indexPath(number uint32) string {
 	return gopath.Join(h.batchPath(number), "index")
+}
+
+func (h *Handle) ucPath(number uint32) string {
+	return gopath.Join(h.batchPath(number), "umbilical-certificates")
 }
 
 func (h *Handle) aaPath(number uint32) string {
@@ -648,6 +659,14 @@ func (h *Handle) closeBatch(batch uint32) error {
 		delete(h.evs, batch)
 	}
 
+	if r, ok := h.ucs[batch]; ok {
+		err := r.Close()
+		if err != nil {
+			return fmt.Errorf("closing umbilical-certificates for %d: %w", batch, err)
+		}
+		delete(h.ucs, batch)
+	}
+
 	if r, ok := h.trees[batch]; ok {
 		err := r.Close()
 		if err != nil {
@@ -730,6 +749,25 @@ func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
 	}
 
 	ca.evs[batch] = r
+
+	return r, nil
+}
+
+// Returns the umbilical certificates file for the given batch.
+func (ca *Handle) ucFor(batch uint32) (*frozencas.Handle, error) {
+	ca.cacheMux.Lock()
+	defer ca.cacheMux.Unlock()
+
+	if r, ok := ca.ucs[batch]; ok {
+		return r, nil
+	}
+
+	r, err := frozencas.Open(ca.ucPath(batch))
+	if err != nil {
+		return nil, err
+	}
+
+	ca.ucs[batch] = r
 
 	return r, nil
 }
@@ -1018,17 +1056,17 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 	}
 
 	// Ok, let's compare
-	err = assertFilesEqual(
-		dir1,
-		dir2,
-		[]string{
-			"tree",
-			"signed-validity-window",
-			"abridged-assertions",
-			"evidence",
-			"index",
-		},
-	)
+	toCheck := []string{
+		"tree",
+		"signed-validity-window",
+		"abridged-assertions",
+		"evidence",
+		"index",
+	}
+	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+		toCheck = append(toCheck, "umbilical-certificates")
+	}
+	err = assertFilesEqual(dir1, dir2, toCheck)
 	if err != nil {
 		return err
 	}
@@ -1129,6 +1167,75 @@ func sha256File(path string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
+func (h *Handle) compressEvidence(ev mtc.Evidence, batch mtc.Batch,
+	ucBuilder *frozencas.Builder) (mtc.Evidence, error) {
+	uev, ok := ev.(mtc.UmbilicalEvidence)
+	if !ok {
+		return ev, nil
+	}
+
+	chain, err := uev.RawChain()
+	if err != nil {
+		return nil, err
+	}
+
+	// Oldest batch to inspect for umbilical certificate
+	end := int64(batch.Number) - int64(h.params.ValidityWindowSize)
+	if end < 0 {
+		end = 0
+	}
+
+	hasher := sha256.New()
+	hashes := make([][32]byte, len(chain))
+	for i, cert := range chain {
+		_, _ = hasher.Write(cert)
+		hasher.Sum(hashes[i][:0])
+		hash := hashes[i]
+		hasher.Reset()
+
+		ok := false
+		for bn := int64(batch.Number) - 1; bn >= end; bn-- {
+			uc, err := h.ucFor(uint32(bn))
+			if err != nil {
+				return nil, fmt.Errorf(
+					"opening umbilical certificates for batch %d: %w",
+					bn,
+					err,
+				)
+			}
+
+			blob, err := uc.Get(hash[:])
+			if err != nil {
+				return nil, fmt.Errorf(
+					"Looking up umbilical certificate hash in batch %d: %w",
+					bn,
+					err,
+				)
+			}
+
+			if blob != nil {
+				ok = true // found!
+				break
+			}
+		}
+
+		if ok {
+			continue
+		}
+
+		// Umbilical certificate not logged yet.
+		err = ucBuilder.Add(cert)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"Writing umbilical certificate to frozencas: %w",
+				err,
+			)
+		}
+	}
+
+	return mtc.NewCompressedUmbilicalEvidence(hashes)
+}
+
 // Like issueBatch, but don't write out to the correct directory yet.
 // Instead, write to dir. Also, don't empty the queue.
 func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
@@ -1167,6 +1274,23 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	defer evW.Close()
 	evBW := bufio.NewWriter(evW)
 
+	ucPath := gopath.Join(dir, "umbilical-certificates")
+	var (
+		ucBuilder *frozencas.Builder
+		ucW       *os.File
+	)
+	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+		ucW, err = os.Create(ucPath)
+		if err != nil {
+			return fmt.Errorf("creating %s: %w", ucPath, err)
+		}
+		defer ucW.Close()
+		ucBuilder, err = frozencas.NewBuilder(ucW)
+		if err != nil {
+			return fmt.Errorf("creating %s: %w", ucPath, err)
+		}
+	}
+
 	if !empty {
 		err = h.walkQueue(func(ar mtc.AssertionRequest) error {
 			// Skip assertions that are already expired.
@@ -1192,8 +1316,22 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 				)
 			}
 
-			ev := ar.Evidence
-			buf, err = ev.MarshalBinary()
+			evs := ar.Evidence
+			if ucBuilder != nil {
+				for i := range len(evs) {
+					evs[i], err = h.compressEvidence(evs[i], batch, ucBuilder)
+					if err != nil {
+						return fmt.Errorf(
+							"Compressing evidence #%d for %x: %w",
+							i,
+							ar.Checksum,
+							err,
+						)
+					}
+				}
+			}
+
+			buf, err = evs.MarshalBinary()
 			if err != nil {
 				return fmt.Errorf("Marshalling evidence %x: %w", ar.Checksum, err)
 			}
@@ -1244,6 +1382,17 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		return fmt.Errorf("opening %s: %w", evPath, err)
 	}
 	defer evR.Close()
+
+	if ucBuilder != nil {
+		err = ucBuilder.Finish()
+		if err != nil {
+			return fmt.Errorf("finishing %s: %w", ucPath, err)
+		}
+		err = ucW.Close()
+		if err != nil {
+			return fmt.Errorf("closing %s: %w", ucPath, err)
+		}
+	}
 
 	// Compute tree
 	tree, err := batch.ComputeTree(bufio.NewReader(aasR))
