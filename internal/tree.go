@@ -1,4 +1,4 @@
-package ca
+package internal
 
 import (
 	"bytes"

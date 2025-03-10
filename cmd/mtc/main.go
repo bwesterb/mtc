@@ -7,6 +7,7 @@ import (
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
+	"github.com/bwesterb/mtc/mirror"
 	"github.com/bwesterb/mtc/umbilical"
 	"github.com/bwesterb/mtc/umbilical/frozencas"
 	"github.com/urfave/cli/v2"
@@ -565,6 +566,27 @@ func handleCaNew(cc *cli.Context) error {
 			Lifetime:          cc.Duration("lifetime"),
 			EvidencePolicy:    evPolicy,
 			UmbilicalRootsPEM: umbilicalRoots,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	h.Close()
+	return nil
+}
+
+func handleMirrorNew(cc *cli.Context) error {
+	if cc.Args().Len() != 1 {
+		if err := cli.ShowSubcommandHelp(cc); err != nil {
+			return err
+		}
+		return errArgs
+	}
+
+	h, err := mirror.New(
+		cc.String("mirror-path"),
+		mirror.NewOpts{
+			ServerPrefix: cc.Args().Get(0),
 		},
 	)
 	if err != nil {
@@ -1147,6 +1169,25 @@ func main() {
 								Usage: "Address for the server to listen on, in the form 'host:port'",
 							},
 						},
+					},
+				},
+			},
+			{
+				Name: "mirror",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "mirror-path",
+						Aliases: []string{"p"},
+						Usage:   "path to mirror",
+						Value:   ".",
+					},
+				},
+				Subcommands: []*cli.Command{
+					{
+						Name:      "new",
+						Usage:     "creates a new mirror",
+						Action:    handleMirrorNew,
+						ArgsUsage: "<server-prefix>",
 					},
 				},
 			},
