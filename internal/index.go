@@ -1,4 +1,4 @@
-package ca
+package internal
 
 // Functions to work with the batches' index file into abridged-assertions and evidence.
 //

@@ -11,23 +11,15 @@ import (
 	"log/slog"
 	"os"
 	gopath "path"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"sync"
 	"time"
 
 	"github.com/bwesterb/mtc"
+	"github.com/bwesterb/mtc/internal"
 	"github.com/bwesterb/mtc/umbilical"
 	"github.com/bwesterb/mtc/umbilical/frozencas"
 	"github.com/bwesterb/mtc/umbilical/revocation"
 
-	"github.com/nightlyone/lockfile"
 	"golang.org/x/crypto/cryptobyte"
-)
-
-var (
-	ErrClosed = errors.New("Handle is closed")
 )
 
 type NewOpts struct {
@@ -46,76 +38,76 @@ type NewOpts struct {
 
 // Handle for exclusive access to a Merkle Tree CA state.
 type Handle struct {
+	b internal.Handle
+
 	// Covered by own lock
 	revocationChecker *revocation.Checker
 
-	// Immutable
-	params mtc.CAParams
-	path   string
-
-	// Mutable covered by RWLock
-	mux            sync.RWMutex
+	// Mutable covered by d.mux
 	signer         mtc.Signer
-	flock          lockfile.Lockfile
-	closed         bool
 	umbilicalRoots *x509.CertPool
-
-	// Caches. Access requires either write lock on mux, or a read lock on mux
-	// and a lock on cacheMux.
-	cacheMux          sync.Mutex
-	indices           map[uint32]*Index            // index files
-	aas               map[uint32]*os.File          // abridged-assertions files
-	evs               map[uint32]*os.File          // evidence files
-	trees             map[uint32]*Tree             // tree files
-	ucs               map[uint32]*frozencas.Handle // umbilical-certificates
-	batchNumbersCache []uint32                     // cache for existing batches
 }
 
-func (ca *Handle) Params() mtc.CAParams {
-	return ca.params
+// Load private state of Merkle Tree CA, and acquire lock.
+//
+// Call Handle.Close() when done.
+func Open(path string) (*Handle, error) {
+	var h Handle
+	if err := h.b.Open(path); err != nil {
+		return nil, err
+	}
+
+	skBuf, err := os.ReadFile(h.skPath())
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", h.skPath(), err)
+	}
+	info, err := os.Stat(h.skPath())
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", h.skPath(), err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o400 {
+		return nil, fmt.Errorf(
+			"incorrect filemode on %s: %o ≠ 0400",
+			h.skPath(),
+			perm,
+		)
+	}
+	h.signer, err = mtc.UnmarshalSigner(h.b.Params.PublicKey.Scheme(), skBuf)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
+	}
+	switch h.b.Params.EvidencePolicy {
+	case mtc.EmptyEvidencePolicyType, mtc.UmbilicalEvidencePolicyType:
+	default:
+		return nil, fmt.Errorf(
+			"unknown evidence policy: %d",
+			h.b.Params.EvidencePolicy,
+		)
+	}
+	return &h, nil
 }
 
-func (ca *Handle) Close() error {
-	ca.mux.Lock()
-	defer ca.mux.Unlock()
+func (h *Handle) Params() mtc.CAParams {
+	return h.b.Params
+}
 
-	if ca.closed {
-		return ErrClosed
+func (h *Handle) Close() error {
+	if err := h.b.Close(); err != nil {
+		return err
 	}
 
-	if ca.revocationChecker != nil {
-		ca.revocationChecker.Close()
+	if h.revocationChecker != nil {
+		h.revocationChecker.Close()
 	}
 
-	for _, idx := range ca.indices {
-		idx.Close()
-	}
-
-	for _, r := range ca.aas {
-		r.Close()
-	}
-
-	for _, r := range ca.evs {
-		r.Close()
-	}
-
-	for _, t := range ca.trees {
-		t.Close()
-	}
-
-	for _, r := range ca.ucs {
-		r.Close()
-	}
-
-	ca.closed = true
-	return ca.flock.Unlock()
+	return nil
 }
 
 // Drops all entries from the queue
 // Requires write lock on mux.
 func (h *Handle) dropQueue() error {
-	if h.closed {
-		return ErrClosed
+	if h.b.Closed {
+		return internal.ErrClosed
 	}
 	w, err := os.OpenFile(h.queuePath(), os.O_TRUNC, 0o644)
 	if err != nil {
@@ -129,34 +121,34 @@ func (h *Handle) dropQueue() error {
 }
 
 func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
-	h.mux.Lock()
+	h.b.Mux.Lock()
 	locked := true
 	defer func() {
 		if locked {
-			h.mux.Unlock()
+			h.b.Mux.Unlock()
 		}
 	}()
 
-	if h.closed {
-		return ErrClosed
+	if h.b.Closed {
+		return internal.ErrClosed
 	}
 
 	nextBatch := mtc.Batch{
-		Number: h.params.ActiveBatches(time.Now()).End + 1,
-		CA:     &h.params,
+		Number: h.b.Params.ActiveBatches(time.Now()).End + 1,
+		CA:     &h.b.Params,
 	}
 	batchStart, batchEnd := nextBatch.ValidityInterval()
 	notAfter := make([]time.Time, len(ars)) // Corrected notAfter time.
 
 	// We release the lock so that the potentially slow revocation checks
 	// don't block the whole CA. First copy the info we need from the Handle.
-	evidencePolicy := h.params.EvidencePolicy
+	evidencePolicy := h.b.Params.EvidencePolicy
 	revChecker, umbRoots, err := h.getRevocationCheckerAndUmbilicalRoots()
 	if err != nil {
 		return err
 	}
 
-	h.mux.Unlock()
+	h.b.Mux.Unlock()
 	locked = false
 
 	for i, ar := range ars {
@@ -218,7 +210,7 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 	}
 
 	// All good. We're ready to write.
-	h.mux.Lock()
+	h.b.Mux.Lock()
 	locked = true
 
 	w, err := os.OpenFile(h.queuePath(), os.O_APPEND|os.O_WRONLY, 0o644)
@@ -309,7 +301,7 @@ func (h *Handle) Queue(ar mtc.AssertionRequest) error {
 // Requires write lock on mux.
 func (h *Handle) getRevocationCheckerAndUmbilicalRoots() (
 	*revocation.Checker, *x509.CertPool, error) {
-	if h.params.EvidencePolicy != mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy != mtc.UmbilicalEvidencePolicyType {
 		return nil, nil, nil
 	}
 
@@ -344,260 +336,28 @@ func (h *Handle) getRevocationCheckerAndUmbilicalRoots() (
 	return h.revocationChecker, h.umbilicalRoots, nil
 }
 
-// Load private state of Merkle Tree CA, and acquire lock.
-//
-// Call Handle.Close() when done.
-func Open(path string) (*Handle, error) {
-	h := Handle{
-		path:    path,
-		indices: make(map[uint32]*Index),
-		aas:     make(map[uint32]*os.File),
-		evs:     make(map[uint32]*os.File),
-		ucs:     make(map[uint32]*frozencas.Handle),
-		trees:   make(map[uint32]*Tree),
-	}
-	if err := h.lockFolder(); err != nil {
-		return nil, err
-	}
-	paramsBuf, err := os.ReadFile(h.paramsPath())
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", h.paramsPath(), err)
-	}
-	if err := h.params.UnmarshalBinary(paramsBuf); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", h.paramsPath(), err)
-	}
-	skBuf, err := os.ReadFile(h.skPath())
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", h.skPath(), err)
-	}
-	info, err := os.Stat(h.skPath())
-	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", h.skPath(), err)
-	}
-	perm := info.Mode().Perm()
-	if perm != 0o400 {
-		return nil, fmt.Errorf("incorrect filemode on %s: %o ≠ 0400", h.skPath(), perm)
-	}
-	h.signer, err = mtc.UnmarshalSigner(h.params.PublicKey.Scheme(), skBuf)
-	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
-	}
-	switch h.params.EvidencePolicy {
-	case mtc.EmptyEvidencePolicyType, mtc.UmbilicalEvidencePolicyType:
-	default:
-		return nil, fmt.Errorf("unknown evidence policy: %d", h.params.EvidencePolicy)
-	}
-	return &h, nil
-}
-
 func (h *Handle) skPath() string {
-	return gopath.Join(h.path, "signing.key")
-}
-
-func (h *Handle) paramsPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "ca-params")
+	return gopath.Join(h.b.Path, "signing.key")
 }
 
 func (h *Handle) queuePath() string {
-	return gopath.Join(h.path, "queue")
+	return gopath.Join(h.b.Path, "queue")
 }
 
 func (h *Handle) revocationCachePath() string {
-	return gopath.Join(h.path, "revocation-cache")
+	return gopath.Join(h.b.Path, "revocation-cache")
 }
 
 func (h *Handle) umbilicalRootsPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "umbilical-roots.pem")
-}
-
-func (h *Handle) treePath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "tree")
-}
-
-func (h *Handle) indexPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "index")
-}
-
-func (h *Handle) ucPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "umbilical-certificates")
-}
-
-func (h *Handle) aaPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "abridged-assertions")
-}
-
-func (h *Handle) evPath(number uint32) string {
-	return gopath.Join(h.batchPath(number), "evidence")
-}
-
-func (h *Handle) batchPath(number uint32) string {
-	return gopath.Join(h.batchesPath(), fmt.Sprintf("%d", number))
-}
-
-func (h *Handle) latestBatchPath() string {
-	return gopath.Join(h.batchesPath(), "latest")
-}
-
-func (h *Handle) batchesPath() string {
-	return gopath.Join(h.path, "www", "mtc", "v1", "batches")
-}
-
-func (h *Handle) tmpPath() string {
-	return gopath.Join(h.path, "tmp")
-}
-
-func (h *Handle) getSignedValidityWindow(number uint32) (
-	*mtc.SignedValidityWindow, error) {
-	var w mtc.SignedValidityWindow
-
-	buf, err := os.ReadFile(
-		gopath.Join(h.batchPath(number), "signed-validity-window"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	err = w.UnmarshalBinary(buf, &h.params)
-	if err != nil {
-		return nil, err
-	}
-
-	return &w, nil
-}
-
-func (h *Handle) lockFolder() error {
-	lockPath := gopath.Join(h.path, "lock")
-	absLockPath, err := filepath.Abs(lockPath)
-	if err != nil {
-		return fmt.Errorf("filepath.Abs(%s): %w", lockPath, err)
-	}
-	flock, err := lockfile.New(absLockPath)
-	if err != nil {
-		return fmt.Errorf("Creating lock %s: %w", absLockPath, err)
-	}
-	h.flock = flock
-	if err := flock.TryLock(); err != nil {
-		return fmt.Errorf("Acquiring lock %s: %w", absLockPath, err)
-	}
-	return nil
-}
-
-// Returns a sorted list of batches for which a directory was created.
-func (h *Handle) listBatchNumbers() ([]uint32, error) {
-	h.cacheMux.Lock()
-	defer h.cacheMux.Unlock()
-
-	if h.batchNumbersCache != nil {
-		return h.batchNumbersCache, nil
-	}
-
-	ds, err := os.ReadDir(h.batchesPath())
-	if err != nil {
-		return nil, err
-	}
-	ret := []uint32{}
-	for _, d := range ds {
-		if !d.IsDir() {
-			continue
-		}
-		name := d.Name()
-		batch, err := strconv.ParseUint(name, 10, 32)
-		if err != nil {
-			continue
-		}
-		ret = append(ret, uint32(batch))
-	}
-	sort.Slice(ret, func(i, j int) bool {
-		return ret[i] < ret[j]
-	})
-
-	h.batchNumbersCache = ret
-
-	return ret, nil
-}
-
-// Returns range of batches for which a directory was created.
-func (h *Handle) listBatchRange() (mtc.BatchRange, error) {
-	var ret mtc.BatchRange
-	numbers, err := h.listBatchNumbers()
-	if err != nil {
-		return ret, err
-	}
-	if len(numbers) == 0 {
-		return ret, nil
-	}
-	begin := numbers[0]
-	end := numbers[len(numbers)-1]
-	if end-begin != uint32(len(numbers)-1) {
-		return ret, fmt.Errorf("Missing batches")
-	}
-	return mtc.BatchRange{
-		Begin: begin,
-		End:   end + 1,
-	}, nil
-}
-
-// Calls f on each assertion queued to be published.
-//
-// Because of locked internal state, f cannot call any function on h.
-func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
-	h.mux.RLock()
-	defer h.mux.RUnlock()
-	return h.walkQueue(f)
-}
-
-// Same as WalkQueue, but asummes read lock on mux.
-func (h *Handle) walkQueue(f func(mtc.AssertionRequest) error) error {
-	r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
-	if err != nil {
-		return fmt.Errorf("Opening queue: %w", err)
-	}
-	defer r.Close()
-
-	br := bufio.NewReader(r)
-
-	for {
-		var (
-			prefix [2]byte
-			aLen   uint16
-			ar     mtc.AssertionRequest
-		)
-		_, err := io.ReadFull(br, prefix[:])
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("Reading queue: %w", err)
-		}
-		s := cryptobyte.String(prefix[:])
-		_ = s.ReadUint16(&aLen)
-
-		buf := make([]byte, int(aLen))
-		_, err = io.ReadFull(br, buf)
-		if err != nil {
-			return fmt.Errorf("Reading queue: %w", err)
-		}
-
-		err = ar.UnmarshalBinary(buf)
-		if err != nil {
-			return fmt.Errorf("Parsing queue: %w", err)
-		}
-
-		err = f(ar)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return gopath.Join(h.b.Path, "www", "mtc", "v1", "umbilical-roots.pem")
 }
 
 // Drop batches that don't need to be stored anymore.
 //
 // Requires writelock on mux.
 func (h *Handle) dropOldBatches(dt time.Time) error {
-	expectedStored := h.params.StoredBatches(dt)
-	existingBatches, err := h.listBatchRange()
+	expectedStored := h.b.Params.StoredBatches(dt)
+	existingBatches, err := h.b.ListBatchRange()
 	if err != nil {
 		return fmt.Errorf("listing existing batches: %w", err)
 	}
@@ -614,328 +374,34 @@ func (h *Handle) dropOldBatches(dt time.Time) error {
 		return fmt.Errorf("would delete all existing batches")
 	}
 
-	h.batchNumbersCache = nil // Invalidate cache of existing batches
+	h.b.BatchNumbersCache = nil // Invalidate cache of existing batches
 
 	for batch := existingBatches.Begin; batch < existingBatches.End; batch++ {
 		if !expectedStored.AreAllPast(batch) {
 			break
 		}
 
-		if err := h.closeBatch(batch); err != nil {
+		if err := h.b.CloseBatch(batch); err != nil {
 			return err
 		}
 
 		slog.Info("Removing batch", "batch", batch)
-		if err := os.RemoveAll(h.batchPath(batch)); err != nil {
+		if err := os.RemoveAll(h.b.BatchPath(batch)); err != nil {
 			return fmt.Errorf("Removing batch %d: %w", batch, err)
 		}
 	}
 	return nil
 }
 
-// Close any (cached) open files for the given batch.
-func (h *Handle) closeBatch(batch uint32) error {
-	if idx, ok := h.indices[batch]; ok {
-		err := idx.Close()
-		if err != nil {
-			return fmt.Errorf("closing index for %d: %w", batch, err)
-		}
-		delete(h.indices, batch)
-	}
-
-	if r, ok := h.aas[batch]; ok {
-		err := r.Close()
-		if err != nil {
-			return fmt.Errorf("closing abridged-assertions for %d: %w", batch, err)
-		}
-		delete(h.aas, batch)
-	}
-
-	if r, ok := h.evs[batch]; ok {
-		err := r.Close()
-		if err != nil {
-			return fmt.Errorf("closing evidence for %d: %w", batch, err)
-		}
-		delete(h.evs, batch)
-	}
-
-	if r, ok := h.ucs[batch]; ok {
-		err := r.Close()
-		if err != nil {
-			return fmt.Errorf("closing umbilical-certificates for %d: %w", batch, err)
-		}
-		delete(h.ucs, batch)
-	}
-
-	if r, ok := h.trees[batch]; ok {
-		err := r.Close()
-		if err != nil {
-			return fmt.Errorf("closing tree for  %d: %w", batch, err)
-		}
-		delete(h.trees, batch)
-	}
-	return nil
-}
-
-// Returns the AbridgedAssertions index for the given batch.
-func (ca *Handle) indexFor(batch uint32) (*Index, error) {
-	ca.cacheMux.Lock()
-	defer ca.cacheMux.Unlock()
-
-	if idx, ok := ca.indices[batch]; ok {
-		return idx, nil
-	}
-
-	idx, err := OpenIndex(ca.indexPath(batch))
-	if err != nil {
-		return nil, err
-	}
-
-	ca.indices[batch] = idx
-
-	return idx, nil
-}
-
-// Return the Tree handle for the given batch.
-func (ca *Handle) treeFor(batch uint32) (*Tree, error) {
-	ca.cacheMux.Lock()
-	defer ca.cacheMux.Unlock()
-
-	if t, ok := ca.trees[batch]; ok {
-		return t, nil
-	}
-
-	t, err := OpenTree(ca.treePath(batch))
-	if err != nil {
-		return nil, err
-	}
-
-	ca.trees[batch] = t
-
-	return t, nil
-}
-
-// Returns file handle to abridged-assertions file for the given batch.
-func (ca *Handle) aaFileFor(batch uint32) (*os.File, error) {
-	ca.cacheMux.Lock()
-	defer ca.cacheMux.Unlock()
-
-	if r, ok := ca.aas[batch]; ok {
-		return r, nil
-	}
-
-	r, err := os.Open(ca.aaPath(batch))
-	if err != nil {
-		return nil, err
-	}
-
-	ca.aas[batch] = r
-
-	return r, nil
-}
-
-// Returns file handle to evidence file for the given batch.
-func (ca *Handle) evFileFor(batch uint32) (*os.File, error) {
-	ca.cacheMux.Lock()
-	defer ca.cacheMux.Unlock()
-
-	if r, ok := ca.evs[batch]; ok {
-		return r, nil
-	}
-
-	r, err := os.Open(ca.evPath(batch))
-	if err != nil {
-		return nil, err
-	}
-
-	ca.evs[batch] = r
-
-	return r, nil
-}
-
-// Returns the umbilical certificates file for the given batch.
-func (ca *Handle) ucFor(batch uint32) (*frozencas.Handle, error) {
-	ca.cacheMux.Lock()
-	defer ca.cacheMux.Unlock()
-
-	if r, ok := ca.ucs[batch]; ok {
-		return r, nil
-	}
-
-	r, err := frozencas.Open(ca.ucPath(batch))
-	if err != nil {
-		return nil, err
-	}
-
-	ca.ucs[batch] = r
-
-	return r, nil
-}
-
-type keySearchResult struct {
-	Batch          uint32
-	SequenceNumber uint64
-	Offset         uint64
-	EvidenceOffset uint64
-}
-
-var errShortCircuit = errors.New("short circuit")
-
-// Returns the certificate for an issued assertion
-func (ca *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
-	ca.mux.RLock()
-	defer ca.mux.RUnlock()
-
-	aa := a.Abridge()
-	var key [mtc.HashLen]byte
-	err := aa.Key(key[:])
-	if err != nil {
-		return nil, err
-	}
-	res, err := ca.aaByKey(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("searching by key: %w", err)
-	}
-
-	if res == nil {
-		return nil, fmt.Errorf("no assertion with key %x on record", key)
-	}
-
-	// Double-check that the assertion is present at the expected
-	// offset in the abridged-assertions file.
-	var key2 [mtc.HashLen]byte
-	aaFile, err := ca.aaFileFor(res.Batch)
-	if err != nil {
-		return nil, err
-	}
-	_, err = aaFile.Seek(int64(res.Offset), 0)
-	if err != nil {
-		return nil, err
-	}
-	err = mtc.UnmarshalAbridgedAssertions(aaFile, func(_ int, aa *mtc.AbridgedAssertion) error {
-		err := aa.Key(key2[:])
-		if err != nil {
-			return err
-		}
-		return errShortCircuit
-	})
-	if err != errShortCircuit {
-		return nil, err
-	}
-	if !bytes.Equal(key[:], key2[:]) {
-		return nil, fmt.Errorf("unable to find key %x in abridged-assertions", key)
-	}
-
-	tree, err := ca.treeFor(res.Batch)
-	if err != nil {
-		return nil, err
-	}
-
-	path, err := tree.AuthenticationPath(res.SequenceNumber)
-	if err != nil {
-		return nil, fmt.Errorf("creating authentication path: %w", err)
-	}
-
-	p := ca.params
-	return &mtc.BikeshedCertificate{
-		Assertion: a,
-		Proof: mtc.NewMerkleTreeProof(
-			&mtc.Batch{CA: &p, Number: res.Batch},
-			res.SequenceNumber,
-			path,
-		),
-	}, nil
-}
-
-// Returns the evidence for an issued assertion
-func (ca *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
-	ca.mux.RLock()
-	defer ca.mux.RUnlock()
-
-	aa := a.Abridge()
-	var key [mtc.HashLen]byte
-	err := aa.Key(key[:])
-	if err != nil {
-		return nil, err
-	}
-	res, err := ca.aaByKey(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("searching by key: %w", err)
-	}
-
-	if res == nil {
-		return nil, fmt.Errorf("no assertion with key %x on record", key)
-	}
-
-	var el *mtc.EvidenceList
-	evFile, err := ca.evFileFor(res.Batch)
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = evFile.Seek(int64(res.EvidenceOffset), 0)
-	if err != nil {
-		return nil, err
-	}
-	err = mtc.UnmarshalEvidenceLists(evFile, func(_ int, el2 *mtc.EvidenceList) error {
-		el = el2
-		return errShortCircuit
-	})
-	if err != errShortCircuit {
-		return nil, err
-	}
-
-	return el, nil
-}
-
-// Search for AbridgedAssertions's batch/seqno/offset/evidence_offset by key.
-func (ca *Handle) aaByKey(key []byte) (*keySearchResult, error) {
-	batches, err := ca.listBatchRange()
-	if err != nil {
-		return nil, fmt.Errorf("listing batches: %w", err)
-	}
-
-	if batches.Len() == 0 {
-		return nil, nil
-	}
-
-	for batch := batches.End - 1; batch >= batches.Begin && batch <= batches.End; batch-- {
-		res, err := ca.aaByKeyIn(batch, key)
-		if err != nil {
-			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
-		}
-		if res != nil {
-			return &keySearchResult{
-				Batch:          batch,
-				SequenceNumber: res.SequenceNumber,
-				Offset:         res.Offset,
-				EvidenceOffset: res.EvidenceOffset,
-			}, nil
-		}
-	}
-
-	return nil, nil
-}
-
-// Find AbridgedAssertion's seqno/offset by key in the given batch.
-func (ca *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error) {
-	idx, err := ca.indexFor(batch)
-	if err != nil {
-		return nil, err
-	}
-
-	return idx.Search(key)
-}
-
 // Issue queued assertions into new batch.
 //
 // Drops batches that fall outside of storage window.
 func (h *Handle) Issue() error {
-	h.mux.Lock()
-	defer h.mux.Unlock()
+	h.b.Mux.Lock()
+	defer h.b.Mux.Unlock()
 
-	if h.closed {
-		return ErrClosed
+	if h.b.Closed {
+		return internal.ErrClosed
 	}
 
 	dt := time.Now()
@@ -953,10 +419,10 @@ func (h *Handle) Issue() error {
 func (h *Handle) issue(dt time.Time) error {
 	slog.Info("Starting issuance", "time", dt.UTC())
 
-	expectedStored := h.params.StoredBatches(dt)
-	expectedActive := h.params.ActiveBatches(dt)
+	expectedStored := h.b.Params.StoredBatches(dt)
+	expectedActive := h.b.Params.ActiveBatches(dt)
 
-	existingBatches, err := h.listBatchRange()
+	existingBatches, err := h.b.ListBatchRange()
 	if err != nil {
 		return fmt.Errorf("listing existing batches: %w", err)
 	}
@@ -998,7 +464,7 @@ func (h *Handle) issue(dt time.Time) error {
 	if toCreate.Len() == 0 {
 		slog.Info(fmt.Sprintf(
 			"No batches were ready to issue. Next batch ready in %s.",
-			h.params.NextBatchAt(dt).Sub(dt).Truncate(time.Second),
+			h.b.Params.NextBatchAt(dt).Sub(dt).Truncate(time.Second),
 		))
 		return nil
 	}
@@ -1024,11 +490,11 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 	deleteDir1 := true
 
 	// We perform issuance twice, and compare results.
-	dir1, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch1-%d-*", number))
+	dir1, err := os.MkdirTemp(h.b.TmpPath(), fmt.Sprintf("batch1-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
-	dir2, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("batch2-%d-*", number))
+	dir2, err := os.MkdirTemp(h.b.TmpPath(), fmt.Sprintf("batch2-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
@@ -1042,7 +508,7 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 
 	batch := mtc.Batch{
 		Number: number,
-		CA:     &h.params,
+		CA:     &h.b.Params,
 	}
 
 	err = h.issueBatchTo(dir1, batch, empty)
@@ -1063,7 +529,7 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		"evidence",
 		"index",
 	}
-	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
 		toCheck = append(toCheck, "umbilical-certificates")
 	}
 	err = assertFilesEqual(dir1, dir2, toCheck)
@@ -1071,10 +537,10 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		return err
 	}
 
-	h.batchNumbersCache = nil // Invalidate cache of existing batches
+	h.b.BatchNumbersCache = nil // Invalidate cache of existing batches
 
 	// We're all set: move temporary directory into place
-	err = os.Rename(dir1, h.batchPath(number))
+	err = os.Rename(dir1, h.b.BatchPath(number))
 	if err != nil {
 		return fmt.Errorf(
 			"renaming: %w",
@@ -1101,7 +567,7 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 
 // Updates the latest symlink to point to the given batch
 func (h *Handle) updateLatest(number uint32) error {
-	dir, err := os.MkdirTemp(h.tmpPath(), fmt.Sprintf("symlink-%d-*", number))
+	dir, err := os.MkdirTemp(h.b.TmpPath(), fmt.Sprintf("symlink-%d-*", number))
 	if err != nil {
 		return fmt.Errorf("creating temporary directory: %w", err)
 	}
@@ -1115,7 +581,7 @@ func (h *Handle) updateLatest(number uint32) error {
 		return err
 	}
 
-	err = os.Rename(newLatest, h.latestBatchPath())
+	err = os.Rename(newLatest, h.b.LatestBatchPath())
 	if err != nil {
 		return err
 	}
@@ -1180,7 +646,7 @@ func (h *Handle) compressEvidence(ev mtc.Evidence, batch mtc.Batch,
 	}
 
 	// Oldest batch to inspect for umbilical certificate
-	end := int64(batch.Number) - int64(h.params.ValidityWindowSize)
+	end := int64(batch.Number) - int64(h.b.Params.ValidityWindowSize)
 	if end < 0 {
 		end = 0
 	}
@@ -1195,7 +661,7 @@ func (h *Handle) compressEvidence(ev mtc.Evidence, batch mtc.Batch,
 
 		ok := false
 		for bn := int64(batch.Number) - 1; bn >= end; bn-- {
-			uc, err := h.ucFor(uint32(bn))
+			uc, err := h.b.UCFor(uint32(bn))
 			if err != nil {
 				return nil, fmt.Errorf(
 					"opening umbilical certificates for batch %d: %w",
@@ -1243,9 +709,9 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	var prevHeads []byte
 
 	if batch.Number == 0 {
-		prevHeads = h.params.PreEpochRoots()
+		prevHeads = h.b.Params.PreEpochRoots()
 	} else {
-		w, err := h.getSignedValidityWindow(batch.Number - 1)
+		w, err := h.b.GetSignedValidityWindow(batch.Number - 1)
 		if err != nil {
 			return fmt.Errorf(
 				"Loading SignedValidityWindow of batch %d: %w",
@@ -1279,7 +745,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		ucBuilder *frozencas.Builder
 		ucW       *os.File
 	)
-	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
 		ucW, err = os.Create(ucPath)
 		if err != nil {
 			return fmt.Errorf("creating %s: %w", ucPath, err)
@@ -1432,7 +898,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	defer indexW.Close()
 
-	err = ComputeIndex(aasR, evR, indexW)
+	err = internal.ComputeIndex(aasR, evR, indexW)
 	if err != nil {
 		return fmt.Errorf("computing %s to start: %w", indexPath, err)
 	}
@@ -1460,9 +926,10 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 //
 // Call Handle.Close() when done.
 func New(path string, opts NewOpts) (*Handle, error) {
-	h := Handle{
-		path: path,
-	}
+	var (
+		h      Handle
+		params mtc.CAParams
+	)
 
 	// Set defaults
 	if opts.Lifetime == 0 {
@@ -1499,16 +966,16 @@ func New(path string, opts NewOpts) (*Handle, error) {
 			return nil, errors.New("Failed to parse any PEM-encoded roots from UmbilicalRootsPEM")
 		}
 	}
-	h.params.ValidityWindowSize = uint64(opts.Lifetime.Nanoseconds() / opts.BatchDuration.Nanoseconds())
-	h.params.BatchDuration = uint64(opts.BatchDuration.Nanoseconds() / 1000000000)
-	h.params.Lifetime = uint64(opts.Lifetime.Nanoseconds() / 1000000000)
-	h.params.StorageWindowSize = uint64(opts.StorageDuration.Nanoseconds() / opts.BatchDuration.Nanoseconds())
+	params.ValidityWindowSize = uint64(opts.Lifetime.Nanoseconds() / opts.BatchDuration.Nanoseconds())
+	params.BatchDuration = uint64(opts.BatchDuration.Nanoseconds() / 1000000000)
+	params.Lifetime = uint64(opts.Lifetime.Nanoseconds() / 1000000000)
+	params.StorageWindowSize = uint64(opts.StorageDuration.Nanoseconds() / opts.BatchDuration.Nanoseconds())
 
-	h.params.StartTime = uint64(time.Now().Unix())
+	params.StartTime = uint64(time.Now().Unix())
 
-	h.params.ServerPrefix = opts.ServerPrefix
-	h.params.Issuer = opts.Issuer
-	h.params.EvidencePolicy = opts.EvidencePolicy
+	params.ServerPrefix = opts.ServerPrefix
+	params.Issuer = opts.Issuer
+	params.EvidencePolicy = opts.EvidencePolicy
 
 	if opts.SignatureScheme == 0 {
 		opts.SignatureScheme = mtc.TLSMLDSA87
@@ -1519,35 +986,18 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GenerateSigningKeypair: %w", err)
 	}
-	h.params.PublicKey = verifier
+	params.PublicKey = verifier
 	h.signer = signer
 
-	err = h.params.Validate()
-	if err != nil {
+	// Create basic directory structure, write out params.
+	if err := h.b.New(path, params); err != nil {
 		return nil, err
 	}
 
-	// Write out. First, create directory if it doesn't exist
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		err = os.MkdirAll(path, 0o755)
-		if err != nil {
-			return nil, fmt.Errorf("os.MkdirAll(%s): %w", path, err)
-		}
-	} else if err != nil {
-		return nil, fmt.Errorf("os.Stat(%s): %w", path, err)
-	} else if !info.IsDir() {
-		return nil, fmt.Errorf("%s: not a directory", path)
-	}
-
-	// Now, attain a file lock.
-	if err := h.lockFolder(); err != nil {
-		return nil, err
-	}
 	unlock := true
 	defer func() {
 		if unlock {
-			_ = h.flock.Unlock()
+			_ = h.b.FLock.Unlock()
 		}
 	}()
 
@@ -1556,39 +1006,83 @@ func New(path string, opts NewOpts) (*Handle, error) {
 		return nil, fmt.Errorf("writing %s: %w", h.skPath(), err)
 	}
 
-	// Create folders
-	pubPath := h.batchesPath()
-	err = os.MkdirAll(pubPath, 0o755)
-	if err != nil {
-		return nil, fmt.Errorf("os.MkdirAll(%s): %w", pubPath, err)
-	}
-
-	tmpPath := h.tmpPath()
-	err = os.MkdirAll(tmpPath, 0o755)
-	if err != nil {
-		return nil, fmt.Errorf("os.MkdirAll(%s): %w", tmpPath, err)
-	}
-
 	// Queue
 	if err := os.WriteFile(h.queuePath(), []byte{}, 0o644); err != nil {
 		return nil, fmt.Errorf("Writing %s: %w", h.queuePath(), err)
 	}
 
 	// Accepted roots
-	if h.params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
 		if err := os.WriteFile(h.umbilicalRootsPath(), opts.UmbilicalRootsPEM, 0o644); err != nil {
 			return nil, fmt.Errorf("Writing %s: %w", h.umbilicalRootsPath(), err)
 		}
 	}
 
-	paramsBuf, err := h.params.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("Marshalling params: %w", err)
-	}
-	if err := os.WriteFile(h.paramsPath(), paramsBuf, 0o644); err != nil {
-		return nil, fmt.Errorf("Writing %s: %w", h.paramsPath(), err)
-	}
-
 	unlock = false
 	return &h, nil
+}
+
+// Calls f on each assertion queued to be published.
+//
+// Because of locked internal state, f cannot call any function on h.
+func (h *Handle) WalkQueue(f func(mtc.AssertionRequest) error) error {
+	h.b.Mux.RLock()
+	defer h.b.Mux.RUnlock()
+	return h.walkQueue(f)
+}
+
+// Same as WalkQueue, but asummes read lock on mux.
+func (h *Handle) walkQueue(f func(mtc.AssertionRequest) error) error {
+	r, err := os.OpenFile(h.queuePath(), os.O_RDONLY, 0)
+	if err != nil {
+		return fmt.Errorf("Opening queue: %w", err)
+	}
+	defer r.Close()
+
+	br := bufio.NewReader(r)
+
+	for {
+		var (
+			prefix [2]byte
+			aLen   uint16
+			ar     mtc.AssertionRequest
+		)
+		_, err := io.ReadFull(br, prefix[:])
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("Reading queue: %w", err)
+		}
+		s := cryptobyte.String(prefix[:])
+		_ = s.ReadUint16(&aLen)
+
+		buf := make([]byte, int(aLen))
+		_, err = io.ReadFull(br, buf)
+		if err != nil {
+			return fmt.Errorf("Reading queue: %w", err)
+		}
+
+		err = ar.UnmarshalBinary(buf)
+		if err != nil {
+			return fmt.Errorf("Parsing queue: %w", err)
+		}
+
+		err = f(ar)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Returns the certificate for an issued assertion
+func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
+	return h.b.CertificateFor(a)
+}
+
+// Returns the evidence for an issued assertion
+func (h *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
+	return h.b.EvidenceFor(a)
 }
