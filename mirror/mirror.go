@@ -351,7 +351,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 
 	// Check whether recomputed root matches the signed validity window.
 	// This is also covered by the consistency check with the previous
-	// batches' roots, but checking separately will givea more helpful
+	// batches' roots, but checking separately will give a more helpful
 	// error message.
 	if !bytes.Equal(tree.Root(), svw.ValidityWindow.Root()) {
 		return fmt.Errorf(
@@ -369,7 +369,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 
 	if !bytes.Equal(heads, svw.TreeHeads) {
 		return fmt.Errorf(
-			"TreeHeads of this batchare not consistent with the previous batch:"+
+			"TreeHeads of this batch are not consistent with the previous batch:"+
 				"%x ≠ %x",
 			heads,
 			svw.TreeHeads,

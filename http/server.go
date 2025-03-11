@@ -24,7 +24,6 @@ type Server struct {
 func NewServer(caPath string, listenAddr string) *Server {
 
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(path.Join(caPath, "www")))))
 
 	ret := &Server{
 		server: &http.Server{
@@ -39,6 +38,7 @@ func NewServer(caPath string, listenAddr string) *Server {
 
 	mux.HandleFunc("/ca/queue", ret.handleCaQueue())
 	mux.HandleFunc("/ca/cert", ret.handleCaCert())
+	mux.Handle("/", http.FileServer(http.Dir(path.Join(caPath, "www"))))
 
 	return ret
 }
