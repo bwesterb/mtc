@@ -430,7 +430,7 @@ func (p *CAParams) StoredBatches(dt time.Time) BatchRange {
 	}
 	return BatchRange{
 		Begin: uint32(start),
-		End:   uint32(currentNumber),
+		End:   uint32(currentNumber) + 1,
 	}
 }
 
@@ -461,7 +461,7 @@ func (p *CAParams) ActiveBatches(dt time.Time) BatchRange {
 	}
 	return BatchRange{
 		Begin: uint32(start),
-		End:   uint32(currentNumber),
+		End:   uint32(currentNumber) + 1,
 	}
 }
 
