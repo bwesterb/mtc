@@ -557,34 +557,11 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		}
 	}
 
-	err = h.updateLatest(number)
+	err = h.b.UpdateLatest(number)
 	if err != nil {
 		return fmt.Errorf("Updating latest symlink: %w", err)
 	}
 
-	return nil
-}
-
-// Updates the latest symlink to point to the given batch
-func (h *Handle) updateLatest(number uint32) error {
-	dir, err := os.MkdirTemp(h.b.TmpPath(), fmt.Sprintf("symlink-%d-*", number))
-	if err != nil {
-		return fmt.Errorf("creating temporary directory: %w", err)
-	}
-
-	defer os.RemoveAll(dir)
-
-	newLatest := gopath.Join(dir, "latest")
-
-	err = os.Symlink(fmt.Sprintf("%d", number), newLatest)
-	if err != nil {
-		return err
-	}
-
-	err = os.Rename(newLatest, h.b.LatestBatchPath())
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
