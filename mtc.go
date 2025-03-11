@@ -611,6 +611,11 @@ func (w *ValidityWindow) MarshalBinary() ([]byte, error) {
 	return b.Bytes()
 }
 
+// Return the root recorded for this ValidityWindow's batch.
+func (w *ValidityWindow) Root() []byte {
+	return w.TreeHeads[len(w.TreeHeads)-HashLen:]
+}
+
 func (w *SignedValidityWindow) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
 	window, err := w.ValidityWindow.MarshalBinary()
@@ -644,7 +649,7 @@ func (w *ValidityWindow) LabeledValdityWindow(ca *CAParams) ([]byte, error) {
 }
 
 // Returns TreeHeads from the previous batch's TreeHeads and the new root.
-func (p *CAParams) newTreeHeads(prevHeads, root []byte) ([]byte, error) {
+func (p *CAParams) NewTreeHeads(prevHeads, root []byte) ([]byte, error) {
 	expected := HashLen * p.ValidityWindowSize
 	if len(prevHeads) != int(expected) {
 		return nil, fmt.Errorf(
@@ -673,7 +678,7 @@ func (batch *Batch) Anchor() TrustAnchorIdentifier {
 
 func (batch *Batch) SignValidityWindow(signer Signer, prevHeads []byte,
 	root []byte) (SignedValidityWindow, error) {
-	newHeads, err := batch.CA.newTreeHeads(prevHeads, root)
+	newHeads, err := batch.CA.NewTreeHeads(prevHeads, root)
 	if err != nil {
 		return SignedValidityWindow{}, err
 	}

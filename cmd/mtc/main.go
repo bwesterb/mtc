@@ -596,6 +596,16 @@ func handleMirrorNew(cc *cli.Context) error {
 	return nil
 }
 
+func handleMirrorUpdate(cc *cli.Context) error {
+	h, err := mirror.Open(cc.String("mirror-path"))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	return h.Update()
+}
+
 // Get the data at hand to inspect for an inspect subcommand, by either
 // reading it from stdin or a file
 func inspectGetBuf(cc *cli.Context) ([]byte, error) {
@@ -1188,6 +1198,11 @@ func main() {
 						Usage:     "creates a new mirror",
 						Action:    handleMirrorNew,
 						ArgsUsage: "<server-prefix>",
+					},
+					{
+						Name:   "update",
+						Usage:  "bring mirror up to date",
+						Action: handleMirrorUpdate,
 					},
 				},
 			},

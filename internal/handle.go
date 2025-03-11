@@ -579,3 +579,26 @@ func (h *Handle) New(path string, params mtc.CAParams) error {
 	unlock = false
 	return nil
 }
+
+// Updates the latest symlink to point to the given batch
+func (h *Handle) UpdateLatest(number uint32) error {
+	dir, err := os.MkdirTemp(h.TmpPath(), fmt.Sprintf("symlink-%d-*", number))
+	if err != nil {
+		return fmt.Errorf("creating temporary directory: %w", err)
+	}
+
+	defer os.RemoveAll(dir)
+
+	newLatest := gopath.Join(dir, "latest")
+
+	err = os.Symlink(fmt.Sprintf("%d", number), newLatest)
+	if err != nil {
+		return err
+	}
+
+	err = os.Rename(newLatest, h.LatestBatchPath())
+	if err != nil {
+		return err
+	}
+	return nil
+}
