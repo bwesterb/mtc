@@ -189,12 +189,12 @@ func (h *Handle) Update() error {
 			))
 		} else if int64(expectedActive.End)-2 == latestBatch {
 			notBefore, _ := (&mtc.Batch{
-				Number: uint32(latestBatch + 1),
+				Number: uint32(latestBatch + 2),
 				CA:     &h.b.Params,
 			}).ValidityInterval()
 			slog.Info(fmt.Sprintf(
 				"Next batch expected before %s",
-				dt.Sub(notBefore).Truncate(time.Second),
+				notBefore.Sub(dt).Truncate(time.Second),
 			))
 		} else {
 			slog.Warn(fmt.Sprintf(
