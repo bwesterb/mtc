@@ -28,7 +28,7 @@ type Handle struct {
 func getAndStore(url, filename string) error {
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w", url, err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -55,7 +55,7 @@ func getAndStore(url, filename string) error {
 func get(url string) ([]byte, error) {
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
