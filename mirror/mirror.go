@@ -194,7 +194,7 @@ func (h *Handle) Update() error {
 			}).ValidityInterval()
 			slog.Info(fmt.Sprintf(
 				"Next batch expected before %s",
-				notBefore.Sub(dt).Truncate(time.Second),
+				dt.Sub(notBefore).Truncate(time.Second),
 			))
 		} else {
 			slog.Warn(fmt.Sprintf(
