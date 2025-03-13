@@ -148,15 +148,15 @@ func (h *Handle) Update() error {
 	h.b.Mux.Lock()
 	defer h.b.Mux.Unlock()
 
-	buf, err := get(h.url("batches/latest/signed-validity-window"))
+	buf, err := get(h.url("batches/latest/validity-window"))
 	if err != nil {
-		return fmt.Errorf("Fetching latest signed-validity-window: %w", err)
+		return fmt.Errorf("Fetching latest validity-window: %w", err)
 	}
 
 	// Note this will also check the signature
 	var svw mtc.SignedValidityWindow
 	if err := svw.UnmarshalBinary(buf, &h.b.Params); err != nil {
-		return fmt.Errorf("Parsing signed-validity-window: %w", err)
+		return fmt.Errorf("Parsing validity-window: %w", err)
 	}
 
 	latestBatch := int64(svw.ValidityWindow.BatchNumber)
@@ -264,22 +264,22 @@ func (h *Handle) fetchBatch(number uint32) error {
 		}
 	}()
 
-	// Fetch abridged-assertions, signed-validity-window, evidence, and
+	// Fetch entries, validity-window, evidence, and
 	// if applicable umbilical-certificates. The rest we recompute.
-	aasPath := gopath.Join(dir, "abridged-assertions")
-	svwPath := gopath.Join(dir, "signed-validity-window")
+	besPath := gopath.Join(dir, "entries")
+	svwPath := gopath.Join(dir, "validity-window")
 	evPath := gopath.Join(dir, "evidence")
 
 	prefix := fmt.Sprintf("batches/%d/", number)
 
 	if err := getAndStore(
-		h.url(prefix+"abridged-assertions"),
-		aasPath,
+		h.url(prefix+"entries"),
+		besPath,
 	); err != nil {
 		return err
 	}
 
-	svwBuf, err := get(h.url(prefix + "signed-validity-window"))
+	svwBuf, err := get(h.url(prefix + "validity-window"))
 	if err != nil {
 		return err
 	}
@@ -299,13 +299,13 @@ func (h *Handle) fetchBatch(number uint32) error {
 
 	var svw mtc.SignedValidityWindow
 	if err := svw.UnmarshalBinary(svwBuf, &h.b.Params); err != nil {
-		return fmt.Errorf("parsing signed-validity-window: %w", err)
+		return fmt.Errorf("parsing validity-window: %w", err)
 	}
 
 	// Recompute tree
-	aasR, err := os.OpenFile(aasPath, os.O_RDONLY, 0)
+	aasR, err := os.OpenFile(besPath, os.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", aasPath, err)
+		return fmt.Errorf("opening %s: %w", besPath, err)
 	}
 	defer aasR.Close()
 
@@ -328,7 +328,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 	// Check consistency
 	if svw.ValidityWindow.BatchNumber != number {
 		return fmt.Errorf(
-			"remote signed-validity-window is for batch %d",
+			"remote validity-window is for batch %d",
 			svw.ValidityWindow.BatchNumber,
 		)
 	}
@@ -340,7 +340,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 		prevSVW, err := h.b.GetSignedValidityWindow(number - 1)
 		if err != nil {
 			return fmt.Errorf(
-				"Loading signed-validity-window of batch %d: %w",
+				"Loading validity-window of batch %d: %w",
 				number-1,
 				err,
 			)
@@ -356,7 +356,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 	if !bytes.Equal(tree.Root(), svw.ValidityWindow.Root()) {
 		return fmt.Errorf(
 			"Root of recomputed tree (%x) does not "+
-				"match root in signed-validity-window (%x)",
+				"match root in validity-window (%x)",
 			tree.Root(),
 			svw.ValidityWindow.Root(),
 		)

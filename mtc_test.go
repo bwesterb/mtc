@@ -195,7 +195,7 @@ func TestDraftExampleAssertion(t *testing.T) {
 		`00000024 08070020 c5d2080f a9a489a2 26b58166 dad00be8 120931a7 69c9c6f1
         f8eefafc 38af9065 00120000 000e000c 0b657861 6d706c65 2e636f6d`,
 	)
-	aa := a.Abridge()
+	aa := a.Abridge(123)
 	buf, err = aa.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
