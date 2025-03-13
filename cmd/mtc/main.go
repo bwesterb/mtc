@@ -908,7 +908,7 @@ func handleInspectCert(cc *cli.Context) error {
 				tai.Issuer,
 			)
 		}
-		be := c.Assertion.Abridge(proof.NotAfter())
+		be := mtc.NewBatchEntry(c.Assertion, proof.NotAfter())
 		root, err := batch.ComputeRootFromAuthenticationPath(
 			proof.Index(),
 			path,

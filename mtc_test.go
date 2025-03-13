@@ -112,7 +112,7 @@ func createTestBatch(t testing.TB, batchSize int) (*Batch, *Tree, []Assertion) {
 		if i < 100 {
 			as = append(as, a)
 		}
-		aa := a.Abridge(time.Unix(123+9, 0))
+		aa := NewBatchEntry(a, time.Unix(123+9, 0))
 		aBytes, err := aa.MarshalBinary()
 		if err != nil {
 			t.Fatal(err)
@@ -145,7 +145,7 @@ func testComputeTree(t testing.TB, batchSize int) {
 			t.Fatal(err)
 		}
 
-		aa := as[i].Abridge(time.Unix(123+9, 0))
+		aa := NewBatchEntry(as[i], time.Unix(123+9, 0))
 
 		err = batch.VerifyAuthenticationPath(
 			uint64(i),
@@ -197,7 +197,7 @@ func TestDraftExampleAssertion(t *testing.T) {
         f8eefafc 38af9065 00120000 000e000c 0b657861 6d706c65 2e636f6d`,
 	)
 	dt := time.Date(2023, 3, 10, 12, 0, 0, 0, time.UTC)
-	aa := a.Abridge(dt)
+	aa := NewBatchEntry(a, dt)
 	buf, err = aa.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +246,7 @@ func TestDraftExampleAssertion(t *testing.T) {
         b78a6b06 c0188ab3 514d60d6 6243e017 8b020301 00010028 0001000e 000c0b65
         78616d70 6c652e63 6f6d0002 00120010 c0000225 c0000c00 c633643c cb007100`,
 	)
-	aa = a.Abridge(dt)
+	aa = NewBatchEntry(a, dt)
 	buf, err = aa.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
