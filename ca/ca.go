@@ -741,7 +741,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 				return nil
 			}
 
-			be := ar.Assertion.Abridge(ar.NotAfter)
+			be := mtc.NewBatchEntry(ar.Assertion, ar.NotAfter)
 			buf, err := be.MarshalBinary()
 			if err != nil {
 				return fmt.Errorf("Marshalling assertion %x: %w", ar.Checksum, err)

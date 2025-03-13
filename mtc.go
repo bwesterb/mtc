@@ -837,7 +837,7 @@ func (s *UnknownSubject) Abridge() AbridgedSubject {
 	panic("Can't abridge unknown subject")
 }
 
-func (a *Assertion) Abridge(notAfter time.Time) (ret BatchEntry) {
+func NewBatchEntry(a Assertion, notAfter time.Time) (ret BatchEntry) {
 	ret.Claims = a.Claims
 	ret.Subject = a.Subject.Abridge()
 	ret.NotAfter = notAfter
@@ -1381,7 +1381,7 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 // Computes the key a BatchEntry for this assertion would have in the index.
 func (a *Assertion) EntryKey(out []byte) error {
 	// We use dummy not_after, as it's ignored in the key.
-	be := a.Abridge(time.Unix(0, 0))
+	be := NewBatchEntry(*a, time.Unix(0, 0))
 	return be.Key(out)
 }
 
