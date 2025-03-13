@@ -1,6 +1,6 @@
 package internal
 
-// Functions to work with the batches' index file into abridged-assertions and evidence.
+// Functions to work with the batches' index file into entries and evidence.
 //
 // The index file consists of 56 byte entries, sorted by key.
 //
@@ -8,9 +8,9 @@ package internal
 //   | 32-byte key  | uint64 seqno | uint64 offset | uint64 evidence_offset |
 //   +--------------+--------------+---------------+------------------------+
 //
-// Each entry corresponds to an AbridgedAssertion. The key is its key,
-// the seqno is the sequence number within the abridged-assertions list,
-// the offset is the byte-offset in the abridged-assertions file, and
+// Each entry corresponds to a BatchEntry be. The key is be.Key(),
+// the seqno is the sequence number within the entries list,
+// the offset is the byte-offset in the entries file, and
 // the evidence_offset is the byte-offset in the evidence file.
 // offset, evidence_offset, and seqno are encoded big endian.
 //
@@ -163,17 +163,17 @@ type indexEntry struct {
 	evidenceOffset uint64
 }
 
-// Reads a streams of AbridgedAssertions Evidence from aaReader and evReader,
+// Reads a streams of BatchEntry Evidence from beReader and evReader,
 // and writes the index to w.
-func ComputeIndex(aaReader, evReader io.Reader, w io.Writer) error {
+func ComputeIndex(beReader, evReader io.Reader, w io.Writer) error {
 	// First compute keys
 	seqno := uint64(0)
 	entries := []indexEntry{}
 
 	var key [mtc.HashLen]byte
-	err := mtc.UnmarshalAbridgedAssertions(aaReader, func(offset int,
-		aa *mtc.AbridgedAssertion) error {
-		err := aa.Key(key[:])
+	err := mtc.UnmarshalBatchEntries(beReader, func(offset int,
+		be *mtc.BatchEntry) error {
+		err := be.Key(key[:])
 		if err != nil {
 			return err
 		}

@@ -524,8 +524,8 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 	// Ok, let's compare
 	toCheck := []string{
 		"tree",
-		"signed-validity-window",
-		"abridged-assertions",
+		"validity-window",
+		"entries",
 		"evidence",
 		"index",
 	}
@@ -700,14 +700,14 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		prevHeads = w.ValidityWindow.TreeHeads
 	}
 
-	// Read queue and write abridged-assertions and evidence
-	aasPath := gopath.Join(dir, "abridged-assertions")
-	aasW, err := os.Create(aasPath)
+	// Read queue and write entries and evidence
+	besPath := gopath.Join(dir, "entries")
+	besW, err := os.Create(besPath)
 	if err != nil {
-		return fmt.Errorf("creating %s: %w", aasPath, err)
+		return fmt.Errorf("creating %s: %w", besPath, err)
 	}
-	defer aasW.Close()
-	aasBW := bufio.NewWriter(aasW)
+	defer besW.Close()
+	besBW := bufio.NewWriter(besW)
 
 	evPath := gopath.Join(dir, "evidence")
 	evW, err := os.Create(evPath)
@@ -741,20 +741,18 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 				return nil
 			}
 
-			// TODO add not_after to abridged assertion and proof
-			// https://github.com/davidben/merkle-tree-certs/pull/92
-			aa := ar.Assertion.Abridge()
-			buf, err := aa.MarshalBinary()
+			be := ar.Assertion.Abridge(ar.NotAfter)
+			buf, err := be.MarshalBinary()
 			if err != nil {
 				return fmt.Errorf("Marshalling assertion %x: %w", ar.Checksum, err)
 			}
 
-			_, err = aasBW.Write(buf)
+			_, err = besBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
 					"Writing assertion %x to %s: %w",
 					ar.Checksum,
-					aasPath,
+					besPath,
 					err,
 				)
 			}
@@ -796,20 +794,20 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		}
 	}
 
-	err = aasBW.Flush()
+	err = besBW.Flush()
 	if err != nil {
-		return fmt.Errorf("flushing %s: %w", aasPath, err)
+		return fmt.Errorf("flushing %s: %w", besPath, err)
 	}
 
-	err = aasW.Close()
+	err = besW.Close()
 	if err != nil {
-		return fmt.Errorf("closing %s: %w", aasPath, err)
+		return fmt.Errorf("closing %s: %w", besPath, err)
 	}
-	aasR, err := os.OpenFile(aasPath, os.O_RDONLY, 0)
+	besR, err := os.OpenFile(besPath, os.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", aasPath, err)
+		return fmt.Errorf("opening %s: %w", besPath, err)
 	}
-	defer aasR.Close()
+	defer besR.Close()
 
 	err = evBW.Flush()
 	if err != nil {
@@ -838,7 +836,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Compute tree
-	tree, err := batch.ComputeTree(bufio.NewReader(aasR))
+	tree, err := batch.ComputeTree(bufio.NewReader(besR))
 	if err != nil {
 		return fmt.Errorf("computing tree: %w", err)
 	}
@@ -862,9 +860,9 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Compute index
-	_, err = aasR.Seek(0, 0)
+	_, err = besR.Seek(0, io.SeekStart)
 	if err != nil {
-		return fmt.Errorf("seeking %s to start: %w", aasPath, err)
+		return fmt.Errorf("seeking %s to start: %w", besPath, err)
 	}
 
 	indexPath := gopath.Join(dir, "index")
@@ -875,7 +873,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 
 	defer indexW.Close()
 
-	err = internal.ComputeIndex(aasR, evR, indexW)
+	err = internal.ComputeIndex(besR, evR, indexW)
 	if err != nil {
 		return fmt.Errorf("computing %s to start: %w", indexPath, err)
 	}
@@ -891,7 +889,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		return fmt.Errorf("marhshalling SignedValidityWindow: %w", err)
 	}
 
-	wPath := gopath.Join(dir, "signed-validity-window")
+	wPath := gopath.Join(dir, "validity-window")
 	err = os.WriteFile(wPath, buf, 0o644)
 	if err != nil {
 		return fmt.Errorf("writing to %s: %w", wPath, err)

@@ -130,9 +130,10 @@ type Assertion struct {
 	Claims  Claims
 }
 
-type AbridgedAssertion struct {
-	Subject AbridgedSubject
-	Claims  Claims
+type BatchEntry struct {
+	Subject  AbridgedSubject
+	Claims   Claims
+	NotAfter time.Time
 }
 
 type AssertionRequest struct {
@@ -179,17 +180,20 @@ const (
 type Proof interface {
 	TrustAnchorIdentifier() TrustAnchorIdentifier
 	Info() []byte
+	NotAfter() time.Time
 }
 
 type MerkleTreeProof struct {
-	anchor TrustAnchorIdentifier
-	index  uint64
-	path   []byte
+	anchor   TrustAnchorIdentifier
+	notAfter time.Time
+	index    uint64
+	path     []byte
 }
 
 type UnknownProof struct {
-	anchor TrustAnchorIdentifier
-	info   []byte
+	anchor   TrustAnchorIdentifier
+	notAfter time.Time
+	info     []byte
 }
 
 type ValidityWindow struct {
@@ -200,6 +204,10 @@ type ValidityWindow struct {
 type SignedValidityWindow struct {
 	ValidityWindow
 	Signature []byte
+}
+
+func (p *MerkleTreeProof) NotAfter() time.Time {
+	return p.notAfter
 }
 
 func (p *MerkleTreeProof) TrustAnchorIdentifier() TrustAnchorIdentifier {
@@ -230,6 +238,10 @@ func (p *MerkleTreeProof) Index() uint64 {
 
 func (p *UnknownProof) TrustAnchorIdentifier() TrustAnchorIdentifier {
 	return p.anchor
+}
+
+func (p *UnknownProof) NotAfter() time.Time {
+	return p.notAfter
 }
 
 func (p *UnknownProof) Info() []byte {
@@ -369,6 +381,12 @@ func (c *BikeshedCertificate) MarshalBinary() ([]byte, error) {
 		return nil, fmt.Errorf("failed to marshal TAI: %w", err)
 	}
 	b.AddBytes(buf)
+
+	notAfter := c.Proof.NotAfter().Unix()
+	if notAfter < 0 {
+		return nil, errors.New("negative timestamp")
+	}
+	b.AddUint64(uint64(notAfter))
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(c.Proof.Info())
 	})
@@ -389,15 +407,21 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) erro
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal TrustAnchorIdentifier: %w", err)
 	}
-	if !s.ReadUint16LengthPrefixed(&proofInfo) {
+	var notAfter uint64
+	if !s.ReadUint64(&notAfter) || !s.ReadUint16LengthPrefixed(&proofInfo) {
 		return ErrTruncated
 	}
 	if !s.Empty() {
 		return ErrExtraBytes
 	}
+	if notAfter >= 1<<63 {
+		return errors.New("timestamp too large")
+	}
 	switch tai.ProofType(caStore) {
 	case MerkleTreeProofType:
-		proof := &MerkleTreeProof{}
+		proof := &MerkleTreeProof{
+			notAfter: time.Unix(int64(notAfter), 0),
+		}
 		if !proofInfo.ReadUint64(&proof.index) ||
 			!copyUint16LengthPrefixed(&proofInfo, &proof.path) {
 			return ErrTruncated
@@ -410,8 +434,9 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) erro
 		return nil
 	}
 	c.Proof = &UnknownProof{
-		anchor: tai,
-		info:   []byte(proofInfo),
+		notAfter: time.Unix(int64(notAfter), 0),
+		anchor:   tai,
+		info:     []byte(proofInfo),
 	}
 	return nil
 }
@@ -812,9 +837,10 @@ func (s *UnknownSubject) Abridge() AbridgedSubject {
 	panic("Can't abridge unknown subject")
 }
 
-func (a *Assertion) Abridge() (ret AbridgedAssertion) {
+func (a *Assertion) Abridge(notAfter time.Time) (ret BatchEntry) {
 	ret.Claims = a.Claims
 	ret.Subject = a.Subject.Abridge()
+	ret.NotAfter = notAfter
 	return
 }
 
@@ -877,29 +903,34 @@ func (a *Assertion) unmarshal(s *cryptobyte.String) error {
 	return nil
 }
 
-func (a *AbridgedAssertion) maxSize() int {
-	return (65535+2)*2 + 2
+func (be *BatchEntry) maxSize() int {
+	return (65535+2)*2 + 2 + 8
 }
 
-func (a *AbridgedAssertion) MarshalBinary() ([]byte, error) {
+func (be *BatchEntry) MarshalBinary() ([]byte, error) {
 	var b cryptobyte.Builder
-	b.AddUint16(uint16(a.Subject.Type()))
+	b.AddUint16(uint16(be.Subject.Type()))
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) { // abridged_subject_info
-		b.AddBytes(a.Subject.Info())
+		b.AddBytes(be.Subject.Info())
 	})
-	claims, err := a.Claims.MarshalBinary()
+	claims, err := be.Claims.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
 	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 		b.AddBytes(claims)
 	})
+	notAfter := be.NotAfter.Unix()
+	if notAfter < 0 {
+		return nil, errors.New("negative timestamp")
+	}
+	b.AddUint64(uint64(notAfter))
 	return b.Bytes()
 }
 
-func (a *AbridgedAssertion) UnmarshalBinary(data []byte) error {
+func (be *BatchEntry) UnmarshalBinary(data []byte) error {
 	s := cryptobyte.String(data)
-	err := a.unmarshal(&s)
+	err := be.unmarshal(&s)
 	if err != nil {
 		return err
 	}
@@ -909,21 +940,28 @@ func (a *AbridgedAssertion) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
-func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
+func (be *BatchEntry) unmarshal(s *cryptobyte.String) error {
 	var (
 		subjectType SubjectType
 		subjectInfo cryptobyte.String
 		claims      cryptobyte.String
+		notAfter    uint64
 	)
 	if !s.ReadUint16((*uint16)(&subjectType)) ||
 		!s.ReadUint16LengthPrefixed(&subjectInfo) ||
-		!s.ReadUint16LengthPrefixed(&claims) {
+		!s.ReadUint16LengthPrefixed(&claims) ||
+		!s.ReadUint64(&notAfter) {
 		return ErrTruncated
 	}
 
-	if err := a.Claims.UnmarshalBinary([]byte(claims)); err != nil {
+	if err := be.Claims.UnmarshalBinary([]byte(claims)); err != nil {
 		return fmt.Errorf("Failed to unmarshal claims: %w", err)
 	}
+
+	if notAfter >= 1<<63 {
+		return errors.New("timestamp too large")
+	}
+	be.NotAfter = time.Unix(int64(notAfter), 0)
 
 	switch subjectType {
 	case TLSSubjectType:
@@ -935,11 +973,11 @@ func (a *AbridgedAssertion) unmarshal(s *cryptobyte.String) error {
 		if !subjectInfo.Empty() {
 			return ErrExtraBytes
 		}
-		a.Subject = &subject
+		be.Subject = &subject
 	default:
 		subjectInfoBuf := make([]byte, len(subjectInfo))
 		copy(subjectInfoBuf, subjectInfo)
-		a.Subject = &UnknownSubject{
+		be.Subject = &UnknownSubject{
 			typ:  subjectType,
 			info: subjectInfoBuf,
 		}
@@ -1135,17 +1173,17 @@ func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
-// Reads a stream of AbridgedAssertions from in, hashes them, and
+// Reads a stream of BatchEntry from in, hashes them, and
 // returns the concatenated hashes.
 func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	ret := &bytes.Buffer{}
 
-	// First read all abridged assertions and hash them.
+	// First read all batch entries and hash them.
 	var index uint64
 	hash := make([]byte, HashLen)
 
-	err := unmarshal(r, func(_ int, aa *AbridgedAssertion) error {
-		err := aa.Hash(hash, batch, index)
+	err := unmarshal(r, func(_ int, be *BatchEntry) error {
+		err := be.Hash(hash, batch, index)
 		if err != nil {
 			return err
 		}
@@ -1161,23 +1199,28 @@ func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
-// Unmarshals AbridgedAssertions from r and calls f for each, with
-// the offset in the stream as first argument, and the abridged
-// assertion as second argument.
+// Unmarshals BatchEntry from r and calls f for each, with
+// the offset in the stream as first argument, and the batch entry
+// as second argument.
 //
-// Returns early one rror.
-func UnmarshalAbridgedAssertions(r io.Reader,
-	f func(int, *AbridgedAssertion) error) error {
+// Returns early on error.
+func UnmarshalBatchEntries(r io.Reader,
+	f func(int, *BatchEntry) error) error {
 	return unmarshal(r, f)
+}
+
+// Unmarshals a single BatchEntry from r.
+func UnmarshalBatchEntry(r io.Reader) (*BatchEntry, error) {
+	return unmarshalOne[*BatchEntry](r)
 }
 
 // Compute batch root from authentication path.
 //
 // To verify a certificate/proof, use VerifyAuthenticationPath instead.
 func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
-	path []byte, aa *AbridgedAssertion) ([]byte, error) {
+	path []byte, be *BatchEntry) ([]byte, error) {
 	h := make([]byte, HashLen)
-	if err := aa.Hash(h[:], batch, index); err != nil {
+	if err := be.Hash(h[:], batch, index); err != nil {
 		return nil, err
 	}
 
@@ -1210,9 +1253,9 @@ func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
 //
 // Return nil on valid authentication path.
 func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
-	aa *AbridgedAssertion) error {
+	be *BatchEntry) error {
 
-	h, err := batch.ComputeRootFromAuthenticationPath(index, path, aa)
+	h, err := batch.ComputeRootFromAuthenticationPath(index, path, be)
 	if err != nil {
 		return err
 	}
@@ -1276,7 +1319,7 @@ func (batch *Batch) hashEmpty(out []byte, index uint64, level uint8) error {
 	return nil
 }
 
-// Compute Merkle tree from a stream of AbridgedAssertion from in.
+// Compute Merkle tree from a stream of BatchEntry from in.
 func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	// First hash the leaves
 	leaves, err := batch.hashLeaves(r)
@@ -1335,21 +1378,32 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	return &Tree{buf: buf.Bytes(), nLeaves: nLeaves}, nil
 }
 
-// Computes the key of the AbridgedAssertion used in the index.
-func (a *AbridgedAssertion) Key(out []byte) error {
-	buf, err := a.MarshalBinary()
+// Computes the key a BatchEntry for this assertion would have in the index.
+func (a *Assertion) EntryKey(out []byte) error {
+	// We use dummy not_after, as it's ignored in the key.
+	be := a.Abridge(time.Unix(0, 0))
+	return be.Key(out)
+}
+
+// Computes the key of the BatchEntry used in the index.
+//
+// Note that keys are not unique: we leave out the not_after field when
+// computing the key. This allows us to look up a BatchEntry for some
+// assertion that does not contain the not_after field.
+func (be *BatchEntry) Key(out []byte) error {
+	buf, err := be.MarshalBinary()
 	if err != nil {
 		return err
 	}
 	h := sha256.New()
-	_, _ = h.Write(buf)
+	_, _ = h.Write(buf[:len(buf)-8]) // skip not_after at the end
 	h.Sum(out[:0])
 	return nil
 }
 
-// Computes the leaf hash of the AbridgedAssertion in the Merkle tree
+// Computes the leaf hash of the BatchEntry in the Merkle tree
 // computed for the batch.
-func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
+func (be *BatchEntry) Hash(out []byte, batch *Batch, index uint64) error {
 	var b cryptobyte.Builder
 	b.AddUint8(2)
 	tai, err := TrustAnchorIdentifier{
@@ -1361,7 +1415,7 @@ func (a *AbridgedAssertion) Hash(out []byte, batch *Batch, index uint64) error {
 	}
 	b.AddBytes(tai)
 	b.AddUint64(index)
-	buf, err := a.MarshalBinary()
+	buf, err := be.MarshalBinary()
 	if err != nil {
 		return err
 	}
@@ -1766,15 +1820,22 @@ func UnmarshalEvidenceLists(r io.Reader,
 	return unmarshal(r, f)
 }
 
+// Unmarshals single EvidenceList from r.
+func UnmarshalEvidenceList(r io.Reader) (*EvidenceList, error) {
+	return unmarshalOne[*EvidenceList](r)
+}
+
 func (el *EvidenceList) maxSize() int {
 	return (65535+2)*2 + 2
 }
 
-func NewMerkleTreeProof(batch *Batch, index uint64, path []byte) *MerkleTreeProof {
+func NewMerkleTreeProof(batch *Batch, index uint64, notAfter time.Time,
+	path []byte) *MerkleTreeProof {
 	return &MerkleTreeProof{
-		anchor: batch.Anchor(),
-		index:  index,
-		path:   path,
+		anchor:   batch.Anchor(),
+		index:    index,
+		path:     path,
+		notAfter: notAfter,
 	}
 }
 

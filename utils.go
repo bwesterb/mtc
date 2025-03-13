@@ -20,6 +20,9 @@ var (
 	// ErrChecksumInvalid is an error returned when a checksum does not
 	// match the corresponding data.
 	ErrChecksumInvalid = errors.New("Invalid checksum")
+
+	// Used to stop unmarshalling early
+	errShortCircuit = errors.New("Short circuit")
 )
 
 type unmarshaler interface {
@@ -33,6 +36,18 @@ type unmarshaler interface {
 
 	// Return maximum possible marshalled size.
 	maxSize() int
+}
+
+// Unmarshals a single T from r.
+func unmarshalOne[T unmarshaler](r io.Reader) (ret T, err error) {
+	err = unmarshal(r, func(_ int, msg T) error {
+		ret = msg
+		return errShortCircuit
+	})
+	if err == errShortCircuit {
+		err = nil
+	}
+	return
 }
 
 // Unmarshals a stream of T from r, and call f on each of them as second

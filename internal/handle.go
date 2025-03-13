@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	gopath "path"
 	"path/filepath"
@@ -18,8 +19,7 @@ import (
 )
 
 var (
-	ErrClosed       = errors.New("Handle is closed")
-	ErrShortCircuit = errors.New("short circuit")
+	ErrClosed = errors.New("Handle is closed")
 )
 
 // Common functionality shared between the state of a Merkle Tree CA
@@ -38,7 +38,7 @@ type Handle struct {
 	// and a lock on cacheMux.
 	CacheMux          sync.Mutex
 	Indices           map[uint32]*Index            // index files
-	AAs               map[uint32]*os.File          // abridged-assertions files
+	BEs               map[uint32]*os.File          // entries files
 	EVs               map[uint32]*os.File          // evidence files
 	Trees             map[uint32]*Tree             // tree files
 	UCs               map[uint32]*frozencas.Handle // umbilical-certificates
@@ -57,7 +57,7 @@ func (h *Handle) Close() error {
 		idx.Close()
 	}
 
-	for _, r := range h.AAs {
+	for _, r := range h.BEs {
 		r.Close()
 	}
 
@@ -89,8 +89,8 @@ func (h *Handle) UCPath(number uint32) string {
 	return gopath.Join(h.BatchPath(number), "umbilical-certificates")
 }
 
-func (h *Handle) AAPath(number uint32) string {
-	return gopath.Join(h.BatchPath(number), "abridged-assertions")
+func (h *Handle) BEPath(number uint32) string {
+	return gopath.Join(h.BatchPath(number), "entries")
 }
 
 func (h *Handle) EVPath(number uint32) string {
@@ -139,7 +139,7 @@ func (h *Handle) GetSignedValidityWindow(number uint32) (
 	var w mtc.SignedValidityWindow
 
 	buf, err := os.ReadFile(
-		gopath.Join(h.BatchPath(number), "signed-validity-window"),
+		gopath.Join(h.BatchPath(number), "validity-window"),
 	)
 	if err != nil {
 		return nil, err
@@ -209,17 +209,17 @@ func (h *Handle) ListBatchRange() (mtc.BatchRange, error) {
 }
 
 // Returns the certificate for an issued assertion
-func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, error) {
+func (h *Handle) CertificateFor(a mtc.Assertion) (
+	*mtc.BikeshedCertificate, error) {
 	h.Mux.RLock()
 	defer h.Mux.RUnlock()
 
-	aa := a.Abridge()
 	var key [mtc.HashLen]byte
-	err := aa.Key(key[:])
+	err := a.EntryKey(key[:])
 	if err != nil {
 		return nil, err
 	}
-	res, err := h.aaByKey(key[:])
+	res, err := h.beByKey(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("searching by key: %w", err)
 	}
@@ -229,28 +229,26 @@ func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, erro
 	}
 
 	// Double-check that the assertion is present at the expected
-	// offset in the abridged-assertions file.
+	// offset in the entries file.
 	var key2 [mtc.HashLen]byte
-	aaFile, err := h.AAFileFor(res.Batch)
+	beFile, err := h.BEFileFor(res.Batch)
 	if err != nil {
 		return nil, err
 	}
-	_, err = aaFile.Seek(int64(res.Offset), 0)
+	_, err = beFile.Seek(int64(res.Offset), io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
-	err = mtc.UnmarshalAbridgedAssertions(aaFile, func(_ int, aa *mtc.AbridgedAssertion) error {
-		err := aa.Key(key2[:])
-		if err != nil {
-			return err
-		}
-		return ErrShortCircuit
-	})
-	if err != ErrShortCircuit {
+	be, err := mtc.UnmarshalBatchEntry(beFile)
+	if err != nil {
+		return nil, err
+	}
+	err = be.Key(key2[:])
+	if err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(key[:], key2[:]) {
-		return nil, fmt.Errorf("unable to find key %x in abridged-assertions", key)
+		return nil, fmt.Errorf("unable to find key %x in entries", key)
 	}
 
 	tree, err := h.TreeFor(res.Batch)
@@ -268,6 +266,7 @@ func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, erro
 		Proof: mtc.NewMerkleTreeProof(
 			&mtc.Batch{CA: &h.Params, Number: res.Batch},
 			res.SequenceNumber,
+			be.NotAfter,
 			path,
 		),
 	}, nil
@@ -277,14 +276,12 @@ func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, erro
 func (h *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
 	h.Mux.RLock()
 	defer h.Mux.RUnlock()
-
-	aa := a.Abridge()
 	var key [mtc.HashLen]byte
-	err := aa.Key(key[:])
+	err := a.EntryKey(key[:])
 	if err != nil {
 		return nil, err
 	}
-	res, err := h.aaByKey(key[:])
+	res, err := h.beByKey(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("searching by key: %w", err)
 	}
@@ -293,28 +290,24 @@ func (h *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
 		return nil, fmt.Errorf("no assertion with key %x on record", key)
 	}
 
-	var el *mtc.EvidenceList
 	evFile, err := h.EVFileFor(res.Batch)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = evFile.Seek(int64(res.EvidenceOffset), 0)
+	_, err = evFile.Seek(int64(res.EvidenceOffset), io.SeekStart)
 	if err != nil {
 		return nil, err
 	}
-	err = mtc.UnmarshalEvidenceLists(evFile, func(_ int, el2 *mtc.EvidenceList) error {
-		el = el2
-		return ErrShortCircuit
-	})
-	if err != ErrShortCircuit {
+	el, err := mtc.UnmarshalEvidenceList(evFile)
+	if err != nil {
 		return nil, err
 	}
 
 	return el, nil
 }
 
-// Search result for aaByKey().
+// Search result for beByKey().
 type keySearchResult struct {
 	Batch          uint32
 	SequenceNumber uint64
@@ -322,8 +315,8 @@ type keySearchResult struct {
 	EvidenceOffset uint64
 }
 
-// Search for AbridgedAssertions's batch/seqno/offset/evidence_offset by key.
-func (h *Handle) aaByKey(key []byte) (*keySearchResult, error) {
+// Search for BatchEntry's batch/seqno/offset/evidence_offset by key.
+func (h *Handle) beByKey(key []byte) (*keySearchResult, error) {
 	batches, err := h.ListBatchRange()
 	if err != nil {
 		return nil, fmt.Errorf("listing batches: %w", err)
@@ -334,7 +327,7 @@ func (h *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	}
 
 	for batch := batches.End - 1; batch >= batches.Begin && batch <= batches.End; batch-- {
-		res, err := h.aaByKeyIn(batch, key)
+		res, err := h.beByKeyIn(batch, key)
 		if err != nil {
 			return nil, fmt.Errorf("Searching in batch %d: %w", batch, err)
 		}
@@ -351,8 +344,8 @@ func (h *Handle) aaByKey(key []byte) (*keySearchResult, error) {
 	return nil, nil
 }
 
-// Find AbridgedAssertion's seqno/offset by key in the given batch.
-func (h *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error) {
+// Find BatchEntry's seqno/offset by key in the given batch.
+func (h *Handle) beByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error) {
 	idx, err := h.IndexFor(batch)
 	if err != nil {
 		return nil, err
@@ -361,21 +354,21 @@ func (h *Handle) aaByKeyIn(batch uint32, key []byte) (*IndexSearchResult, error)
 	return idx.Search(key)
 }
 
-// Returns file handle to abridged-assertions file for the given batch.
-func (h *Handle) AAFileFor(batch uint32) (*os.File, error) {
+// Returns file handle to entries file for the given batch.
+func (h *Handle) BEFileFor(batch uint32) (*os.File, error) {
 	h.CacheMux.Lock()
 	defer h.CacheMux.Unlock()
 
-	if r, ok := h.AAs[batch]; ok {
+	if r, ok := h.BEs[batch]; ok {
 		return r, nil
 	}
 
-	r, err := os.Open(h.AAPath(batch))
+	r, err := os.Open(h.BEPath(batch))
 	if err != nil {
 		return nil, err
 	}
 
-	h.AAs[batch] = r
+	h.BEs[batch] = r
 
 	return r, nil
 }
@@ -437,7 +430,7 @@ func (h *Handle) TreeFor(batch uint32) (*Tree, error) {
 	return t, nil
 }
 
-// Returns the AbridgedAssertions index for the given batch.
+// Returns the index for the given batch.
 func (h *Handle) IndexFor(batch uint32) (*Index, error) {
 	h.CacheMux.Lock()
 	defer h.CacheMux.Unlock()
@@ -459,7 +452,7 @@ func (h *Handle) IndexFor(batch uint32) (*Index, error) {
 func (h *Handle) Open(path string) error {
 	h.Path = path
 	h.Indices = make(map[uint32]*Index)
-	h.AAs = make(map[uint32]*os.File)
+	h.BEs = make(map[uint32]*os.File)
 	h.EVs = make(map[uint32]*os.File)
 	h.UCs = make(map[uint32]*frozencas.Handle)
 	h.Trees = make(map[uint32]*Tree)
@@ -487,12 +480,12 @@ func (h *Handle) CloseBatch(batch uint32) error {
 		delete(h.Indices, batch)
 	}
 
-	if r, ok := h.AAs[batch]; ok {
+	if r, ok := h.BEs[batch]; ok {
 		err := r.Close()
 		if err != nil {
-			return fmt.Errorf("closing abridged-assertions for %d: %w", batch, err)
+			return fmt.Errorf("closing entriesfor %d: %w", batch, err)
 		}
-		delete(h.AAs, batch)
+		delete(h.BEs, batch)
 	}
 
 	if r, ok := h.EVs[batch]; ok {

@@ -652,7 +652,7 @@ func inspectGetCAParams(cc *cli.Context) (*mtc.CAParams, error) {
 	return &p, nil
 }
 
-func handleInspectSignedValidityWindow(cc *cli.Context) error {
+func handleInspectValidityWindow(cc *cli.Context) error {
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
 		return err
@@ -805,9 +805,8 @@ func writeAssertionRequest(w *tabwriter.Writer, ar mtc.AssertionRequest) error {
 }
 
 func writeAssertion(w *tabwriter.Writer, a mtc.Assertion) {
-	aa := a.Abridge()
-	cs := aa.Claims
-	subj := aa.Subject
+	cs := a.Claims
+	subj := a.Subject.Abridge()
 	fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 	switch subj := subj.(type) {
 	case *mtc.AbridgedTLSSubject:
@@ -909,11 +908,11 @@ func handleInspectCert(cc *cli.Context) error {
 				tai.Issuer,
 			)
 		}
-		aa := c.Assertion.Abridge()
+		be := c.Assertion.Abridge(proof.NotAfter())
 		root, err := batch.ComputeRootFromAuthenticationPath(
 			proof.Index(),
 			path,
-			&aa,
+			&be,
 		)
 		if err != nil {
 			return fmt.Errorf("computing root: %w", err)
@@ -983,7 +982,7 @@ func handleInspectEvidence(cc *cli.Context) error {
 	return nil
 }
 
-func handleInspectAbridgedAssertions(cc *cli.Context) error {
+func handleInspectEntries(cc *cli.Context) error {
 	r, err := inspectGetReader(cc)
 	if err != nil {
 		return err
@@ -991,14 +990,14 @@ func handleInspectAbridgedAssertions(cc *cli.Context) error {
 	defer r.Close()
 
 	count := 0
-	err = mtc.UnmarshalAbridgedAssertions(
+	err = mtc.UnmarshalBatchEntries(
 		bufio.NewReader(r),
-		func(_ int, aa *mtc.AbridgedAssertion) error {
+		func(_ int, be *mtc.BatchEntry) error {
 			count++
-			cs := aa.Claims
-			subj := aa.Subject
+			cs := be.Claims
+			subj := be.Subject
 			var key [mtc.HashLen]byte
-			aa.Key(key[:])
+			be.Key(key[:])
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 			fmt.Fprintf(w, "key\t%x\n", key)
 			fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
@@ -1027,7 +1026,7 @@ func handleInspectAbridgedAssertions(cc *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Total number of abridged assertions: %d\n", count)
+	fmt.Printf("Total number of entries: %d\n", count)
 	return nil
 }
 
@@ -1216,15 +1215,15 @@ func main() {
 						ArgsUsage: "[path]",
 					},
 					{
-						Name:      "signed-validity-window",
-						Usage:     "parses batch's signed-validity-window file",
-						Action:    handleInspectSignedValidityWindow,
+						Name:      "validity-window",
+						Usage:     "parses batch's validity-window file",
+						Action:    handleInspectValidityWindow,
 						ArgsUsage: "[path]",
 					},
 					{
-						Name:      "abridged-assertions",
-						Usage:     "parses batch's abridged-assertions file",
-						Action:    handleInspectAbridgedAssertions,
+						Name:      "entries",
+						Usage:     "parses batch's entries file",
+						Action:    handleInspectEntries,
 						ArgsUsage: "[path]",
 					},
 					{
