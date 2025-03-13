@@ -686,7 +686,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	var prevHeads []byte
 
 	if batch.Number == 0 {
-		prevHeads = h.b.Params.PreEpochRoots()
+		prevHeads = h.b.Params.PreEpochTreeHeads()
 	} else {
 		w, err := h.b.GetSignedValidityWindow(batch.Number - 1)
 		if err != nil {
@@ -879,7 +879,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Sign validity window
-	w, err := batch.SignValidityWindow(h.signer, prevHeads, tree.Root())
+	w, err := batch.SignValidityWindow(h.signer, prevHeads, tree.Head())
 	if err != nil {
 		return fmt.Errorf("signing ValidityWindow: %w", err)
 	}

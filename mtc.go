@@ -575,8 +575,8 @@ func (p *CAParams) Validate() error {
 	return nil
 }
 
-// Returns the roots of the validity window prior the epoch.
-func (p *CAParams) PreEpochRoots() []byte {
+// Returns the tree heads of the validity window prior the epoch.
+func (p *CAParams) PreEpochTreeHeads() []byte {
 	b := Batch{
 		Number: 0,
 		CA:     p,
@@ -636,8 +636,8 @@ func (w *ValidityWindow) MarshalBinary() ([]byte, error) {
 	return b.Bytes()
 }
 
-// Return the root recorded for this ValidityWindow's batch.
-func (w *ValidityWindow) Root() []byte {
+// Return the tree head recorded for this ValidityWindow's batch.
+func (w *ValidityWindow) CurHead() []byte {
 	return w.TreeHeads[:HashLen]
 }
 
@@ -1140,8 +1140,8 @@ func (t *Tree) LeafCount() uint64 {
 	return t.nLeaves
 }
 
-// Return root of the tree
-func (t *Tree) Root() []byte {
+// Return head (root) of the tree
+func (t *Tree) Head() []byte {
 	return t.buf[len(t.buf)-HashLen : len(t.buf)]
 }
 
@@ -1214,10 +1214,10 @@ func UnmarshalBatchEntry(r io.Reader) (*BatchEntry, error) {
 	return unmarshalOne[*BatchEntry](r)
 }
 
-// Compute batch root from authentication path.
+// Compute batch tree head from authentication path.
 //
 // To verify a certificate/proof, use VerifyAuthenticationPath instead.
-func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
+func (batch *Batch) ComputeTreeHeadFromAuthenticationPath(index uint64,
 	path []byte, be *BatchEntry) ([]byte, error) {
 	h := make([]byte, HashLen)
 	if err := be.Hash(h[:], batch, index); err != nil {
@@ -1255,7 +1255,7 @@ func (batch *Batch) ComputeRootFromAuthenticationPath(index uint64,
 func (batch *Batch) VerifyAuthenticationPath(index uint64, path, root []byte,
 	be *BatchEntry) error {
 
-	h, err := batch.ComputeRootFromAuthenticationPath(index, path, be)
+	h, err := batch.ComputeTreeHeadFromAuthenticationPath(index, path, be)
 	if err != nil {
 		return err
 	}
