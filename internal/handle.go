@@ -483,7 +483,7 @@ func (h *Handle) CloseBatch(batch uint32) error {
 	if r, ok := h.BEs[batch]; ok {
 		err := r.Close()
 		if err != nil {
-			return fmt.Errorf("closing entriesfor %d: %w", batch, err)
+			return fmt.Errorf("closing entries for %d: %w", batch, err)
 		}
 		delete(h.BEs, batch)
 	}

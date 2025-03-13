@@ -700,7 +700,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		prevHeads = w.ValidityWindow.TreeHeads
 	}
 
-	// Read queue and write entries and evidence
+	// Read queue and write batch entries and evidence
 	besPath := gopath.Join(dir, "entries")
 	besW, err := os.Create(besPath)
 	if err != nil {
