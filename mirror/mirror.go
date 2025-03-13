@@ -335,7 +335,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 
 	var prevHeads []byte
 	if number == 0 {
-		prevHeads = h.b.Params.PreEpochRoots()
+		prevHeads = h.b.Params.PreEpochTreeHeads()
 	} else {
 		prevSVW, err := h.b.GetSignedValidityWindow(number - 1)
 		if err != nil {
@@ -353,16 +353,16 @@ func (h *Handle) fetchBatch(number uint32) error {
 	// This is also covered by the consistency check with the previous
 	// batches' roots, but checking separately will give a more helpful
 	// error message.
-	if !bytes.Equal(tree.Root(), svw.ValidityWindow.Root()) {
+	if !bytes.Equal(tree.Head(), svw.ValidityWindow.CurHead()) {
 		return fmt.Errorf(
-			"Root of recomputed tree (%x) does not "+
-				"match root in validity-window (%x)",
-			tree.Root(),
-			svw.ValidityWindow.Root(),
+			"Head of recomputed tree (%x) does not "+
+				"match current head in validity-window (%x)",
+			tree.Head(),
+			svw.ValidityWindow.CurHead(),
 		)
 	}
 
-	heads, err := h.b.Params.NewTreeHeads(prevHeads, tree.Root())
+	heads, err := h.b.Params.NewTreeHeads(prevHeads, tree.Head())
 	if err != nil {
 		return fmt.Errorf("Computing expected tree heads: %w", err)
 	}

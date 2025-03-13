@@ -136,8 +136,8 @@ func createTestBatch(t testing.TB, batchSize int) (*Batch, *Tree, []Assertion) {
 func testComputeTree(t testing.TB, batchSize int) {
 	batch, tree, as := createTestBatch(t, batchSize)
 
-	root := tree.Root()
-	incorrectRoot := make([]byte, HashLen)
+	root := tree.Head()
+	incorrectHead := make([]byte, HashLen)
 
 	for i := 0; i < batchSize && i < len(as); i++ {
 		path, err := tree.AuthenticationPath(uint64(i))
@@ -160,7 +160,7 @@ func testComputeTree(t testing.TB, batchSize int) {
 		err = batch.VerifyAuthenticationPath(
 			uint64(i),
 			path,
-			incorrectRoot,
+			incorrectHead,
 			&aa,
 		)
 		if err == nil {

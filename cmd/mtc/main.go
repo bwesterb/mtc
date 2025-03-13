@@ -784,7 +784,7 @@ func handleInspectTree(cc *cli.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	fmt.Fprintf(w, "number of leaves\t%d\n", t.LeafCount())
 	fmt.Fprintf(w, "number of nodes\t%d\n", t.NodeCount())
-	fmt.Fprintf(w, "root\t%x\n", t.Root())
+	fmt.Fprintf(w, "tree head\t%x\n", t.Head())
 	w.Flush()
 	return nil
 }
@@ -909,16 +909,16 @@ func handleInspectCert(cc *cli.Context) error {
 			)
 		}
 		be := mtc.NewBatchEntry(c.Assertion, proof.NotAfter())
-		root, err := batch.ComputeRootFromAuthenticationPath(
+		head, err := batch.ComputeTreeHeadFromAuthenticationPath(
 			proof.Index(),
 			path,
 			&be,
 		)
 		if err != nil {
-			return fmt.Errorf("computing root: %w", err)
+			return fmt.Errorf("computing tree head: %w", err)
 		}
 
-		fmt.Fprintf(w, "recomputed root\t%x\n", root)
+		fmt.Fprintf(w, "recomputed tree head\t%x\n", head)
 
 		w.Flush()
 		fmt.Printf("authentication path\n")
