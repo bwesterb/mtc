@@ -613,7 +613,7 @@ func (w *ValidityWindow) MarshalBinary() ([]byte, error) {
 
 // Return the root recorded for this ValidityWindow's batch.
 func (w *ValidityWindow) Root() []byte {
-	return w.TreeHeads[len(w.TreeHeads)-HashLen:]
+	return w.TreeHeads[:HashLen]
 }
 
 func (w *SignedValidityWindow) MarshalBinary() ([]byte, error) {
@@ -665,7 +665,7 @@ func (p *CAParams) NewTreeHeads(prevHeads, root []byte) ([]byte, error) {
 			len(root),
 		)
 	}
-	return append(prevHeads[HashLen:], root...), nil
+	return append(root, prevHeads[HashLen:]...), nil
 }
 
 func (batch *Batch) Anchor() TrustAnchorIdentifier {
