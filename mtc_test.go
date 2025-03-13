@@ -11,6 +11,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/sha3"
 )
@@ -111,7 +112,7 @@ func createTestBatch(t testing.TB, batchSize int) (*Batch, *Tree, []Assertion) {
 		if i < 100 {
 			as = append(as, a)
 		}
-		aa := a.Abridge()
+		aa := a.Abridge(time.Unix(123+9, 0))
 		aBytes, err := aa.MarshalBinary()
 		if err != nil {
 			t.Fatal(err)
@@ -144,7 +145,7 @@ func testComputeTree(t testing.TB, batchSize int) {
 			t.Fatal(err)
 		}
 
-		aa := as[i].Abridge()
+		aa := as[i].Abridge(time.Unix(123+9, 0))
 
 		err = batch.VerifyAuthenticationPath(
 			uint64(i),
@@ -195,14 +196,16 @@ func TestDraftExampleAssertion(t *testing.T) {
 		`00000024 08070020 c5d2080f a9a489a2 26b58166 dad00be8 120931a7 69c9c6f1
         f8eefafc 38af9065 00120000 000e000c 0b657861 6d706c65 2e636f6d`,
 	)
-	aa := a.Abridge(123)
+	dt := time.Date(2023, 3, 10, 12, 0, 0, 0, time.UTC)
+	aa := a.Abridge(dt)
 	buf, err = aa.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
 	}
 	hexEqual(t, buf,
 		`00000022 0807d8e2 c44fc82e 175e5698 b1c25324 6c9a996f c37bad29 fd59b6aa
-        838b0a93 0b000012 0000000e 000c0b65 78616d70 6c652e63 6f6d`,
+         838b0a93 0b000012 0000000e 000c0b65 78616d70 6c652e63 6f6d0000 0000640b
+         1bc0`,
 	)
 
 	pubRSA := &rsa.PublicKey{
@@ -243,7 +246,7 @@ func TestDraftExampleAssertion(t *testing.T) {
         b78a6b06 c0188ab3 514d60d6 6243e017 8b020301 00010028 0001000e 000c0b65
         78616d70 6c652e63 6f6d0002 00120010 c0000225 c0000c00 c633643c cb007100`,
 	)
-	aa = a.Abridge()
+	aa = a.Abridge(dt)
 	buf, err = aa.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +254,7 @@ func TestDraftExampleAssertion(t *testing.T) {
 	hexEqual(t, buf,
 		`00000022 08049a04 087a4d52 033a0a20 04333359 ccf29703 25684c5f a96f1ca1
         35cb2ab1 f2670028 0001000e 000c0b65 78616d70 6c652e63 6f6d0002 00120010
-        c0000225 c0000c00 c633643c cb007100`,
+        c0000225 c0000c00 c633643c cb007100 00000000 640b1bc0`,
 	)
 
 	// TODO ecdsa
