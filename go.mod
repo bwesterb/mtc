@@ -1,6 +1,6 @@
 module github.com/bwesterb/mtc
 
-go 1.23.3
+go 1.22.0
 
 require (
 	github.com/cloudflare/circl v1.6.0
@@ -10,7 +10,9 @@ require (
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a
 )
 
-require go.etcd.io/bbolt v1.4.0
+require go.etcd.io/bbolt v1.3.0
+
+require github.com/boltdb/bolt v1.3.1 // indirect
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
