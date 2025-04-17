@@ -449,13 +449,17 @@ func (h *Handle) IndexFor(batch uint32) (*Index, error) {
 	return idx, nil
 }
 
-func (h *Handle) Open(path string) error {
-	h.Path = path
+func (h *Handle) init() {
 	h.Indices = make(map[uint32]*Index)
 	h.BEs = make(map[uint32]*os.File)
 	h.EVs = make(map[uint32]*os.File)
 	h.UCs = make(map[uint32]*frozencas.Handle)
 	h.Trees = make(map[uint32]*Tree)
+}
+
+func (h *Handle) Open(path string) error {
+	h.init()
+	h.Path = path
 	if err := h.LockFolder(); err != nil {
 		return err
 	}
@@ -516,6 +520,7 @@ func (h *Handle) CloseBatch(batch uint32) error {
 
 // Set up basic directory structure for a CA or mirror
 func (h *Handle) New(path string, params mtc.CAParams) error {
+	h.init()
 	h.Params = params
 	h.Path = path
 
