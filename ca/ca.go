@@ -23,7 +23,12 @@ import (
 )
 
 type NewOpts struct {
-	Issuer       mtc.RelativeOID
+	Issuer mtc.RelativeOID
+
+	// ServerPrefix is the URL at which the CA can be reached excluding the
+	// implied "https://". For example, if the server prefix is
+	// "ca.example.com/path", then the issuance endpoint is
+	// "https://ca.example.com/path/ca/queue".
 	ServerPrefix string
 
 	// Fields below are optional.
