@@ -1066,3 +1066,26 @@ func (h *Handle) CertificateFor(a mtc.Assertion) (*mtc.BikeshedCertificate, erro
 func (h *Handle) EvidenceFor(a mtc.Assertion) (*mtc.EvidenceList, error) {
 	return h.b.EvidenceFor(a)
 }
+
+// SignedValidityWindowForBatch returns the signed validity window for the
+// given batch number.
+func (h *Handle) SignedValidityWindowForBatch(number uint32) (
+	*mtc.SignedValidityWindow, error) {
+	h.b.Mux.RLock()
+	defer h.b.Mux.RUnlock()
+
+	path := gopath.Join(h.b.BatchPath(number), "validity-window")
+	wBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("Reading signed validity window for batch number %d: %w", number, err)
+	}
+
+	w := new(mtc.SignedValidityWindow)
+	err = w.UnmarshalBinary(wBytes, &h.b.Params)
+	if err != nil {
+		return nil, fmt.Errorf("Verifying and parsing the signed validity window: %w", err)
+
+	}
+
+	return w, nil
+}

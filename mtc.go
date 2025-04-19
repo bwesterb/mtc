@@ -22,16 +22,20 @@ import (
 
 // CAParams holds the public parameters of a Merkle Tree CA
 type CAParams struct {
-	Issuer             RelativeOID
-	PublicKey          Verifier
-	ProofType          ProofType
-	StartTime          uint64
-	BatchDuration      uint64
-	Lifetime           uint64
+	Issuer        RelativeOID
+	PublicKey     Verifier
+	ProofType     ProofType
+	StartTime     uint64
+	BatchDuration uint64
+	Lifetime      uint64
+
+	// ValidityWindowSize is the number of tree heads in each validity
+	// window.
 	ValidityWindowSize uint64
-	StorageWindowSize  uint64
-	ServerPrefix       string
-	EvidencePolicy     EvidencePolicyType
+
+	StorageWindowSize uint64
+	ServerPrefix      string
+	EvidencePolicy    EvidencePolicyType
 }
 
 const (
@@ -197,6 +201,7 @@ type UnknownProof struct {
 }
 
 type ValidityWindow struct {
+	// BatchNumber is the batch number of the last tree head.
 	BatchNumber uint32
 	TreeHeads   []byte
 }
@@ -441,6 +446,86 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) erro
 	return nil
 }
 
+// VerifyOptions includes parameters for verifying a BikeshedCertificate.
+type VerifyOptions struct {
+	// ValidityWindow is a validity window that covers the certificate. It
+	// is the caller's responsibility to verify the validity window was
+	// signed by the CA, e.g., by verifying the SignedValidityWindow that
+	// contains the validity window.
+	ValidityWindow *ValidityWindow
+
+	// CA includes the parameters of the CA that issued the batch
+	// containing the certificate.
+	CA *CAParams
+
+	// CurrentTime is used to to check if the certificate has expired.
+	CurrentTime time.Time
+}
+
+// Verify is used to verify that a BikeshedCertificate is covered by a validity
+// window. It is the caller's responsibility to verify the validity window was
+// signed by the CA. An error indicates that the certificate does not belong to
+// a batch in the validity window or that the certificate is otherwise invalid.
+func (c *BikeshedCertificate) Verify(opts VerifyOptions) error {
+	if opts.ValidityWindow == nil {
+		return errors.New("Missing validity window")
+	}
+
+	if opts.CA == nil {
+		return errors.New("Missing CA parameters")
+	}
+
+	p, ok := c.Proof.(*MerkleTreeProof)
+	if !ok {
+		return fmt.Errorf("Expected MerkleTreeProof; got %t", c.Proof)
+	}
+	certBatchNumber := p.TrustAnchorIdentifier().BatchNumber
+
+	// If the current time wasn't set, then use use time.Now().
+	currentTime := opts.CurrentTime
+	if currentTime.IsZero() {
+		currentTime = time.Now()
+	}
+
+	// Check if the certificate is not yet valid.
+	notBefore := time.Unix(int64(opts.CA.StartTime), 0).Add(
+		time.Duration(uint64(certBatchNumber)*opts.CA.BatchDuration) *
+			time.Second)
+	if currentTime.Before(notBefore) {
+		return fmt.Errorf("Certificate is not yet valid (%v)", p.NotAfter().UTC())
+	}
+
+	// Check if the certificate has expired.
+	if currentTime.After(c.Proof.NotAfter()) {
+		return fmt.Errorf("Certificate has expired (%v)", p.NotAfter().UTC())
+	}
+
+	// Check that the certificate issuer matches the CA.
+	if !bytes.Equal(p.TrustAnchorIdentifier().Issuer, opts.CA.Issuer) {
+		return fmt.Errorf("Certificate issuer (%s) does not match CA (%s)",
+			p.TrustAnchorIdentifier().Issuer, opts.CA.Issuer)
+	}
+
+	// Select the tree head.
+	head, err := opts.ValidityWindow.headForBatch(certBatchNumber, opts.CA)
+	if err != nil {
+		return err
+	}
+
+	// Verify the authentication path.
+	be := NewBatchEntry(c.Assertion, p.NotAfter())
+	b := Batch{
+		CA:     opts.CA,
+		Number: certBatchNumber,
+	}
+	err = b.VerifyAuthenticationPath(p.Index(), p.Path(), head, &be)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // Batches that are expected to be available at this CA, at the given time.
 // The last few might not yet have been published.
 func (p *CAParams) StoredBatches(dt time.Time) BatchRange {
@@ -459,7 +544,7 @@ func (p *CAParams) StoredBatches(dt time.Time) BatchRange {
 	}
 }
 
-// Returns the the time when the next batch starts.
+// Returns the time when the next batch starts.
 func (p *CAParams) NextBatchAt(dt time.Time) time.Time {
 	ts := dt.Unix()
 	currentNumber := (ts - int64(p.StartTime)) / int64(p.BatchDuration)
@@ -639,6 +724,23 @@ func (w *ValidityWindow) MarshalBinary() ([]byte, error) {
 // Return the tree head recorded for this ValidityWindow's batch.
 func (w *ValidityWindow) CurHead() []byte {
 	return w.TreeHeads[:HashLen]
+}
+
+func (w *ValidityWindow) headForBatch(number uint32, p *CAParams) ([]byte,
+	error) {
+	maxBatchNumber := w.BatchNumber
+	minBatchNumber := uint32(0)
+	if max := uint64(maxBatchNumber); max > p.ValidityWindowSize {
+		minBatchNumber = uint32(max - p.ValidityWindowSize)
+	}
+	if number < minBatchNumber || number > maxBatchNumber {
+		return nil, fmt.Errorf("Batch number (%d) out of range [%d, %d]",
+			number, minBatchNumber, maxBatchNumber)
+	}
+
+	headIndex := int(HashLen * (maxBatchNumber - number))
+	head := w.TreeHeads[headIndex : headIndex+HashLen]
+	return head, nil
 }
 
 func (w *SignedValidityWindow) MarshalBinary() ([]byte, error) {
