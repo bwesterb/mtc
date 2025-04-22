@@ -9,7 +9,7 @@ import (
 )
 
 // Pull-style iterator similar to io.ReadCloser but for general T and
-// only pulls one value at a time. Assumes T is refernece.
+// only pulls one value at a time. Assumes T is a reference.
 type Cursor[T any] interface {
 	// Pull one value and write to out.
 	Pull(out T) error
@@ -152,7 +152,7 @@ func (c *streamingUnmarshaler[T]) pull(out T) error {
 		}
 
 		// Ok, we need to extend the buffer.
-		// Did we have sucecss in the last iteration?
+		// Did we have success in the last iteration?
 		if cap(oldS) != cap(c.buf) {
 			// Yes, we need to move the remaining data to the front.
 			copy(c.buf[:len(oldS)], oldS)

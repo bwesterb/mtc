@@ -1485,7 +1485,7 @@ func (b *TreeBuilder) Finish() (*Tree, error) {
 }
 
 // Convenience function to compute Merkle tree from
-// a stream of BatchEntry from in.
+// a stream of BatchEntry from r.
 func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	tb := batch.NewTreeBuilder()
 	err := ForEach(

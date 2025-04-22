@@ -183,32 +183,32 @@ func NewIndexBuilder(w io.Writer) *IndexBuilder {
 	}
 }
 
-func (b *IndexBuilder) Push(in IndexBuildEntry) error {
-	if b.err != nil {
-		return b.err
+func (ib *IndexBuilder) Push(in IndexBuildEntry) error {
+	if ib.err != nil {
+		return ib.err
 	}
 
-	b.entries = append(b.entries, indexEntry{
-		seqno:          b.seqno,
+	ib.entries = append(ib.entries, indexEntry{
+		seqno:          ib.seqno,
 		key:            in.Key,
 		offset:         in.Offset,
 		evidenceOffset: in.EvidenceOffset,
 	})
 
-	b.seqno++
+	ib.seqno++
 	return nil
 }
 
-func (b *IndexBuilder) Finish() error {
+func (ib *IndexBuilder) Finish() error {
 	// Sort by key
-	slices.SortFunc(b.entries, func(a, b indexEntry) int {
-		return bytes.Compare(a.key[:], b.key[:])
+	slices.SortFunc(ib.entries, func(a, ib indexEntry) int {
+		return bytes.Compare(a.key[:], ib.key[:])
 	})
 
 	// Write out
-	bw := bufio.NewWriter(b.w)
+	bw := bufio.NewWriter(ib.w)
 	var lastKey [mtc.HashLen]byte
-	for _, entry := range b.entries {
+	for _, entry := range ib.entries {
 		if lastKey == entry.key {
 			// skip duplicate entries
 			continue
