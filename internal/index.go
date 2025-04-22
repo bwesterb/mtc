@@ -44,6 +44,12 @@ type IndexSearchResult struct {
 	EvidenceOffset uint64
 }
 
+type IndexBuildEntry struct {
+	Key            [mtc.HashLen]byte
+	Offset         uint64
+	EvidenceOffset uint64
+}
+
 // Opens an index
 func OpenIndex(path string) (*Index, error) {
 	r, err := mmap.Open(path)
@@ -163,64 +169,60 @@ type indexEntry struct {
 	evidenceOffset uint64
 }
 
-// Reads a streams of BatchEntry Evidence from beReader and evReader,
-// and writes the index to w.
-func ComputeIndex(beReader, evReader io.Reader, w io.Writer) error {
-	// First compute keys
-	seqno := uint64(0)
-	entries := []indexEntry{}
+type IndexBuilder struct {
+	err     error
+	w       io.Writer
+	seqno   uint64
+	entries []indexEntry
+}
 
-	var key [mtc.HashLen]byte
-	err := mtc.UnmarshalBatchEntries(beReader, func(offset int,
-		be *mtc.BatchEntry) error {
-		err := be.Key(key[:])
-		if err != nil {
-			return err
-		}
-		entries = append(entries, indexEntry{
-			seqno:  seqno,
-			key:    key,
-			offset: uint64(offset),
-		})
-		seqno++
-		return nil
-	})
+func NewIndexBuilder(w io.Writer) *IndexBuilder {
+	return &IndexBuilder{
+		w:       w,
+		entries: []indexEntry{},
+	}
+}
 
-	seqno = uint64(0)
-	err = mtc.UnmarshalEvidenceLists(evReader, func(offset int, _ *mtc.EvidenceList) error {
-		entries[seqno].evidenceOffset = uint64(offset)
-		seqno++
-		return nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("computing keys: %w", err)
+func (b *IndexBuilder) Push(in IndexBuildEntry) error {
+	if b.err != nil {
+		return b.err
 	}
 
+	b.entries = append(b.entries, indexEntry{
+		seqno:          b.seqno,
+		key:            in.Key,
+		offset:         in.Offset,
+		evidenceOffset: in.EvidenceOffset,
+	})
+
+	b.seqno++
+	return nil
+}
+
+func (b *IndexBuilder) Finish() error {
 	// Sort by key
-	slices.SortFunc(entries, func(a, b indexEntry) int {
+	slices.SortFunc(b.entries, func(a, b indexEntry) int {
 		return bytes.Compare(a.key[:], b.key[:])
 	})
 
 	// Write out
-	bw := bufio.NewWriter(w)
+	bw := bufio.NewWriter(b.w)
 	var lastKey [mtc.HashLen]byte
-	for _, entry := range entries {
+	for _, entry := range b.entries {
 		if lastKey == entry.key {
 			// skip duplicate entries
 			continue
 		}
 
 		lastKey = entry.key
-		var b cryptobyte.Builder
-		b.AddBytes(entry.key[:])
-		b.AddUint64(entry.seqno)
-		b.AddUint64(entry.offset)
-		b.AddUint64(entry.evidenceOffset)
-		buf, _ := b.Bytes()
+		var cb cryptobyte.Builder
+		cb.AddBytes(entry.key[:])
+		cb.AddUint64(entry.seqno)
+		cb.AddUint64(entry.offset)
+		cb.AddUint64(entry.evidenceOffset)
+		buf, _ := cb.Bytes()
 
-		_, err = bw.Write(buf)
-		if err != nil {
+		if _, err := bw.Write(buf); err != nil {
 			return fmt.Errorf("writing index: %w", err)
 		}
 	}

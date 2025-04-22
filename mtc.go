@@ -1275,40 +1275,14 @@ func (t *Tree) AuthenticationPath(index uint64) ([]byte, error) {
 	return ret.Bytes(), nil
 }
 
-// Reads a stream of BatchEntry from in, hashes them, and
-// returns the concatenated hashes.
-func (batch *Batch) hashLeaves(r io.Reader) ([]byte, error) {
-	ret := &bytes.Buffer{}
-
-	// First read all batch entries and hash them.
-	var index uint64
-	hash := make([]byte, HashLen)
-
-	err := unmarshal(r, func(_ int, be *BatchEntry) error {
-		err := be.Hash(hash, batch, index)
-		if err != nil {
-			return err
-		}
-		_, _ = ret.Write(hash)
-		index++
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return ret.Bytes(), nil
+// Unmarshals BatchEntry from r.
+func UnmarshalBatchEntries(r io.Reader) Cursor[*BatchEntry] {
+	return unmarshal[*BatchEntry](r)
 }
 
-// Unmarshals BatchEntry from r and calls f for each, with
-// the offset in the stream as first argument, and the batch entry
-// as second argument.
-//
-// Returns early on error.
-func UnmarshalBatchEntries(r io.Reader,
-	f func(int, *BatchEntry) error) error {
-	return unmarshal(r, f)
+// Unmarshals BatchEntry from r, keeping note of the offset of each.
+func UnmarshalBatchEntriesWithOffset(r io.Reader) Cursor[*BatchEntryWithOffset] {
+	return unmarshal[*BatchEntryWithOffset](r)
 }
 
 // Unmarshals a single BatchEntry from r.
@@ -1421,14 +1395,44 @@ func (batch *Batch) hashEmpty(out []byte, index uint64, level uint8) error {
 	return nil
 }
 
-// Compute Merkle tree from a stream of BatchEntry from in.
-func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
-	// First hash the leaves
-	leaves, err := batch.hashLeaves(r)
-	if err != nil {
-		return nil, fmt.Errorf("HashLeaves: %w", err)
+type TreeBuilder struct {
+	leafHashes *bytes.Buffer
+	index      uint64
+	batch      *Batch
+	err        error
+}
+
+func (batch *Batch) NewTreeBuilder() *TreeBuilder {
+	return &TreeBuilder{
+		leafHashes: &bytes.Buffer{},
+		batch:      batch,
+	}
+}
+
+func (b *TreeBuilder) Push(be *BatchEntry) error {
+	var hash [HashLen]byte
+
+	if b.err != nil {
+		return b.err
 	}
 
+	if err := be.Hash(hash[:], b.batch, b.index); err != nil {
+		b.err = err
+		return err
+	}
+
+	_, _ = b.leafHashes.Write(hash[:])
+	b.index++
+
+	return nil
+}
+
+func (b *TreeBuilder) Finish() (*Tree, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+
+	leaves := b.leafHashes.Bytes()
 	nLeaves := uint64(len(leaves)) / uint64(HashLen)
 	buf := bytes.NewBuffer(leaves)
 
@@ -1437,7 +1441,7 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 			nLeaves: 0,
 			buf:     make([]byte, HashLen),
 		}
-		if err := batch.hashEmpty(tree.buf[:], 0, 0); err != nil {
+		if err := b.batch.hashEmpty(tree.buf[:], 0, 0); err != nil {
 			return nil, err
 		}
 		return tree, nil
@@ -1454,7 +1458,7 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	for nNodes != 1 {
 		// Add empty node if number of leaves on this level is odd
 		if nNodes&1 == 1 {
-			if err := batch.hashEmpty(h, nNodes, level); err != nil {
+			if err := b.batch.hashEmpty(h, nNodes, level); err != nil {
 				return nil, err
 			}
 			_, _ = buf.Write(h)
@@ -1468,7 +1472,7 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 			leftRight := buf.Bytes()[offset+2*HashLen*int(i):]
 			left := leftRight[:HashLen]
 			right := leftRight[HashLen : 2*HashLen]
-			if err := batch.hashNode(h, left, right, i, level); err != nil {
+			if err := b.batch.hashNode(h, left, right, i, level); err != nil {
 				return nil, err
 			}
 			_, _ = buf.Write(h)
@@ -1478,6 +1482,20 @@ func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
 	}
 
 	return &Tree{buf: buf.Bytes(), nLeaves: nLeaves}, nil
+}
+
+// Convenience function to compute Merkle tree from
+// a stream of BatchEntry from in.
+func (batch *Batch) ComputeTree(r io.Reader) (*Tree, error) {
+	tb := batch.NewTreeBuilder()
+	err := ForEach(
+		UnmarshalBatchEntries(r),
+		tb.Push,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return tb.Finish()
 }
 
 // Computes the key a BatchEntry for this assertion would have in the index.
@@ -1493,6 +1511,9 @@ func (a *Assertion) EntryKey(out []byte) error {
 // computing the key. This allows us to look up a BatchEntry for some
 // assertion that does not contain the not_after field.
 func (be *BatchEntry) Key(out []byte) error {
+	if len(out) != 32 {
+		return errors.New("BatchEntry keys are 32 bytes")
+	}
 	buf, err := be.MarshalBinary()
 	if err != nil {
 		return err
@@ -1912,14 +1933,9 @@ func (el *EvidenceList) MarshalBinary() ([]byte, error) {
 	return b.Bytes()
 }
 
-// Unmarshals EvidenceLists from r and calls f for each, with
-// the offset in the stream as first argument, and the EvidenceList
-// as second argument.
-//
-// Returns early on error.
-func UnmarshalEvidenceLists(r io.Reader,
-	f func(int, *EvidenceList) error) error {
-	return unmarshal(r, f)
+// Unmarshals EvidenceLists from r.
+func UnmarshalEvidenceLists(r io.Reader) Cursor[*EvidenceList] {
+	return unmarshal[*EvidenceList](r)
 }
 
 // Unmarshals single EvidenceList from r.
@@ -2140,4 +2156,38 @@ func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
 	}
 	tai.Issuer = oid
 	return nil
+}
+
+// Same as BatchEntry, but keeps track of offset within stream it was
+// unmarshalled from. Used to create index.
+type BatchEntryWithOffset struct {
+	BatchEntry
+	Offset int
+}
+
+func (be *BatchEntryWithOffset) unmarshal(s *cryptobyte.String) error {
+	return be.BatchEntry.unmarshal(s)
+}
+func (be *BatchEntryWithOffset) maxSize() int {
+	return be.BatchEntry.maxSize()
+}
+func (be *BatchEntryWithOffset) recordOffset(offset int) {
+	be.Offset = offset
+}
+
+// Same as EvidenceList, but keeps track of offset within stream it was
+// unmarshalled from. Used to create index.
+type EvidenceListWithOffset struct {
+	EvidenceList
+	Offset int
+}
+
+func (ev *EvidenceListWithOffset) unmarshal(s *cryptobyte.String) error {
+	return ev.EvidenceList.unmarshal(s)
+}
+func (ev *EvidenceListWithOffset) maxSize() int {
+	return ev.EvidenceList.maxSize()
+}
+func (ev *EvidenceListWithOffset) recordOffset(offset int) {
+	ev.Offset = offset
 }

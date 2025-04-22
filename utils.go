@@ -8,6 +8,47 @@ import (
 	"reflect"
 )
 
+// Pull-style iterator similar to io.ReadCloser but for general T and
+// only pulls one value at a time. Assumes T is refernece.
+type Cursor[T any] interface {
+	// Pull one value and write to out.
+	Pull(out T) error
+
+	// Release underlying resources. Closing twice is no-op.
+	Close() error
+}
+
+// Pull from c and call f on each.
+//
+// Abort early if f returns an error. Closes c.
+func ForEach[T any](c Cursor[T], f func(T) error) error {
+	var t T
+	defer c.Close()
+
+	// T is a pointer type, so by default nil. We need to allocate t
+	// first. The obvious t = new(T) is wrong, as new(T) is of type *T
+	// instead of T. The following does what we want.
+	reflect.ValueOf(&t).Elem().Set(reflect.New(reflect.TypeOf(t).Elem()))
+
+	for {
+		err := c.Pull(t)
+		if err == EOF {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+
+		err = f(t)
+		if err != nil {
+			return err
+		}
+	}
+
+	panic("shouldn't reach")
+}
+
 var (
 	// ErrTruncated is a parsing error returned when the input seems to have
 	// been truncated.
@@ -21,8 +62,8 @@ var (
 	// match the corresponding data.
 	ErrChecksumInvalid = errors.New("Invalid checksum")
 
-	// Used to stop unmarshalling early
-	errShortCircuit = errors.New("Short circuit")
+	// Used to indicate end of stream for Cursor[T].
+	EOF = errors.New("EOF")
 )
 
 type unmarshaler interface {
@@ -38,74 +79,119 @@ type unmarshaler interface {
 	maxSize() int
 }
 
-// Unmarshals a single T from r.
-func unmarshalOne[T unmarshaler](r io.Reader) (ret T, err error) {
-	err = unmarshal(r, func(_ int, msg T) error {
-		ret = msg
-		return errShortCircuit
-	})
-	if err == errShortCircuit {
-		err = nil
-	}
-	return
+// If an object (that implements unmarshaler) implements this
+// interface, when unmarshalling a list of  objects, we'll call the
+// recordOffset() function with the offset of the object in the list.
+//
+// This allows us to implement both UnmarshalBatchEntries() and
+// UnmarshalBatchEntriesWithOffsets() without too much hassle.
+// The latter is required to create an index into the entries file.
+type offsetRecorder interface {
+	recordOffset(offset int)
 }
 
-// Unmarshals a stream of T from r, and call f on each of them as second
-// argument, with the offset in the stream as the first argument.
-//
-// If f returns an error, break.
-func unmarshal[T unmarshaler](r io.Reader, f func(int, T) error) error {
-	// Create a new instance of T
-	var msg T
-	reflect.ValueOf(&msg).Elem().Set(reflect.New(reflect.TypeOf(msg).Elem()))
+// Unmarshals a single T from r.
+func unmarshalOne[T unmarshaler](r io.Reader) (T, error) {
+	c := unmarshal[T](r)
+	defer c.Close()
+	var t T
 
+	// T is a pointer type, so by default nil. We need to allocate t
+	// first. The obvious t = new(T) is wrong, as new(T) is of type *T
+	// instead of T. The following does what we want.
+	reflect.ValueOf(&t).Elem().Set(reflect.New(reflect.TypeOf(t).Elem()))
+
+	err := c.Pull(t)
+	return t, err
+}
+
+type streamingUnmarshaler[T unmarshaler] struct {
+	r            io.Reader
+	buf          []byte
+	s            cryptobyte.String
+	maxSize      int
+	err          error
+	offset       int
+	recordOffset bool
+}
+
+// Unmarshals a stream of T from r.
+func unmarshal[T unmarshaler](r io.Reader) Cursor[T] {
+	var dummy T
 	buf := make([]byte, 512)
-	s := cryptobyte.String(buf[:0])
-	maxSize := msg.maxSize()
-	offset := 0
+	_, recordOffset := any(dummy).(offsetRecorder)
+	return &streamingUnmarshaler[T]{
+		r:            r,
+		buf:          buf,
+		s:            cryptobyte.String(buf[:0]),
+		maxSize:      dummy.maxSize(),
+		recordOffset: recordOffset,
+	}
+}
 
+func (c *streamingUnmarshaler[T]) Close() error {
+	return nil
+}
+
+func (c *streamingUnmarshaler[T]) pull(out T) error {
 	for {
-		oldS := s
-		err := msg.unmarshal(&s)
+		oldS := c.s
+		err := out.unmarshal(&c.s)
 
-		// Success? Call f and continue
 		if err == nil {
-			if err := f(offset, msg); err != nil {
-				return err
+			if c.recordOffset {
+				any(out).(offsetRecorder).recordOffset(c.offset)
 			}
-			offset += len(oldS) - len(s)
-			continue
+
+			c.offset += len(oldS) - len(c.s)
+			return nil
 		}
 
 		if err != ErrTruncated {
 			return err
 		}
 
+		// Ok, we need to extend the buffer.
 		// Did we have sucecss in the last iteration?
-		if cap(oldS) != cap(buf) {
+		if cap(oldS) != cap(c.buf) {
 			// Yes, we need to move the remaining data to the front.
-			copy(buf[:len(oldS)], oldS)
+			copy(c.buf[:len(oldS)], oldS)
 		} else {
 			// No. We grow the buffer. No need to move the remaining data:
 			// it's still in front.
-			if len(buf) > maxSize {
+			if len(c.buf) > c.maxSize {
 				// This shouldn't be possible, but let's error gracefully.
 				return errors.New("Unexpected ErrTruncated")
 			}
 
-			buf = append(buf, make([]byte, len(buf))...)
+			c.buf = append(c.buf, make([]byte, len(c.buf))...)
 		}
 
-		n, err := r.Read(buf[len(oldS):])
+		n, err := c.r.Read(c.buf[len(oldS):])
 		if n == 0 && err == io.EOF {
-			break
+			return EOF
 		}
 		if n == 0 {
 			return err
 		}
-		s = cryptobyte.String(buf[:len(oldS)+n])
+		c.s = cryptobyte.String(c.buf[:len(oldS)+n])
 	}
-	return nil
+
+	panic("shouldn't reach")
+}
+
+func (c *streamingUnmarshaler[T]) Pull(out T) error {
+	if c.err != nil {
+		return c.err
+	}
+
+	err := c.pull(out)
+
+	if err != nil {
+		c.err = err
+	}
+
+	return err
 }
 
 func copyUint8LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
