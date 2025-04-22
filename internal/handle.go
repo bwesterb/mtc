@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -30,9 +31,10 @@ type Handle struct {
 	Path   string
 
 	// Mutable covered by RWLock mux
-	Mux    sync.RWMutex
-	FLock  lockfile.Lockfile
-	Closed bool
+	Mux            sync.RWMutex
+	FLock          lockfile.Lockfile
+	Closed         bool
+	UmbilicalRoots *x509.CertPool
 
 	// Caches. Access requires either write lock on mux, or a read lock on mux
 	// and a lock on cacheMux.
@@ -115,6 +117,10 @@ func (h *Handle) TmpPath() string {
 
 func (h *Handle) ParamsPath() string {
 	return gopath.Join(h.Path, "www", "mtc", "v1", "ca-params")
+}
+
+func (h *Handle) UmbilicalRootsPath() string {
+	return gopath.Join(h.Path, "www", "mtc", "v1", "umbilical-roots.pem")
 }
 
 func (h *Handle) LockFolder() error {
@@ -599,4 +605,30 @@ func (h *Handle) UpdateLatest(number uint32) error {
 		return err
 	}
 	return nil
+}
+
+// Returns a copy of the trusted umbilical roots.
+//
+// Requires write lock on mux.
+func (h *Handle) GetUmbilicalRoots() (*x509.CertPool, error) {
+	if h.Params.EvidencePolicy != mtc.UmbilicalEvidencePolicy {
+		return nil, nil
+	}
+
+	if h.UmbilicalRoots != nil {
+		return h.UmbilicalRoots.Clone(), nil
+	}
+
+	umbilicalRoots := x509.NewCertPool()
+	pemCerts, err := os.ReadFile(h.UmbilicalRootsPath())
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", h.UmbilicalRootsPath(), err)
+	}
+	// TODO use AddCertWithConstraint to deal with constrained roots:
+	// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
+	if !umbilicalRoots.AppendCertsFromPEM(pemCerts) {
+		return nil, fmt.Errorf("failed to append root certs")
+	}
+	h.UmbilicalRoots = umbilicalRoots
+	return h.UmbilicalRoots, nil
 }

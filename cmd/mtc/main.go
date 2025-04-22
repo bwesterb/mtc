@@ -32,8 +32,8 @@ var (
 	errNotFound   = errors.New("not found")
 	fCpuProfile   *os.File
 	evPolicyMap   = map[string]mtc.EvidencePolicyType{
-		"empty":     mtc.EmptyEvidencePolicyType,
-		"umbilical": mtc.UmbilicalEvidencePolicyType,
+		"empty":     mtc.EmptyEvidencePolicy,
+		"umbilical": mtc.UmbilicalEvidencePolicy,
 	}
 )
 
@@ -544,7 +544,7 @@ func handleCaNew(cc *cli.Context) error {
 	}
 
 	var umbilicalRoots []byte
-	if evPolicy == mtc.UmbilicalEvidencePolicyType {
+	if evPolicy == mtc.UmbilicalEvidencePolicy {
 		if !cc.IsSet("umbilical-roots") {
 			return errors.New("umbilical-roots must be set")
 		}
@@ -583,10 +583,32 @@ func handleMirrorNew(cc *cli.Context) error {
 		return errArgs
 	}
 
+	var (
+		evPolicy       mtc.EvidencePolicyType
+		umbilicalRoots []byte
+		err            error
+	)
+	if cc.IsSet("evidence-policy") {
+		var ok bool
+		evPolicy, ok = evPolicyMap[cc.String("evidence-policy")]
+		if !ok {
+			return fmt.Errorf("unknown evidence policy: %s", cc.String("evidence-policy"))
+		}
+	}
+
+	if cc.IsSet("umbilical-roots") {
+		umbilicalRoots, err = os.ReadFile(cc.String("umbilical-roots"))
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", cc.String("umbilical-roots"), err)
+		}
+	}
+
 	h, err := mirror.New(
 		cc.String("mirror-path"),
 		mirror.NewOpts{
-			ServerPrefix: cc.Args().Get(0),
+			ServerPrefix:           cc.Args().Get(0),
+			UmbilicalRootsPEM:      umbilicalRoots,
+			ExpectedEvidencePolicy: evPolicy,
 		},
 	)
 	if err != nil {
@@ -1198,6 +1220,20 @@ func main() {
 						Usage:     "creates a new mirror",
 						Action:    handleMirrorNew,
 						ArgsUsage: "<server-prefix>",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name: "evidence-policy",
+								Usage: fmt.Sprintf(
+									"expected policy determining assertion evidence requirements (accepted values %v)",
+									slices.Collect(maps.Keys(evPolicyMap)),
+								),
+								Value: "empty",
+							},
+							&cli.StringFlag{
+								Name:  "umbilical-roots",
+								Usage: "path to PEM-encoded accepted roots for umbilical (X.509 chain) evidence",
+							},
+						},
 					},
 					{
 						Name:   "update",

@@ -89,23 +89,25 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 	return
 }
 
-// Checks whether the given assertion (to be) issued is consistent with
-// the given X.509 certificate chain and accepted roots for the given validity
-// interval. The assertion is allowed to cover less than the certificate:
-// eg, only example.com where the certificate covers some.example.com too.
+// Checks whether the given claims (to be) issued for the subject  is
+// consistent with the given X.509 certificate chain and accepted roots
+// for the given validity interval. The claims are allowed to cover less than
+// the certificate: eg, only example.com where the certificate
+// covers some.example.com too.
 //
 // On the other hand, we are more strict than is perhaps required. For
-// instance, we do not allow an assertion for some.example.com to be backed
+// instance, we do not allow a claim for some.example.com to be backed
 // by a wildcard certificate for *.example.com.
 // Also we require basically the same chain to be valid for the full
-// duration of the assertion.
+// duration of the claims.
 //
 // If rc is set, checks whether the certificate is revoked. Does not check
 // revocation of intermediates.
 //
 // If consistent, returns one or more verified chains.
-func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
-	chain []*x509.Certificate, roots *x509.CertPool, rc *revocation.Checker) (
+func CheckClaimsValidForX509(claims mtc.Claims, subj mtc.AbridgedSubject,
+	start, end time.Time, chain []*x509.Certificate,
+	roots *x509.CertPool, rc *revocation.Checker) (
 	[][]*x509.Certificate, error) {
 	if len(chain) == 0 {
 		return nil, errors.New("empty chain")
@@ -114,7 +116,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
 	cert := chain[0]
 
 	// Check if the claims are covered by the certificate.
-	for _, ip := range slices.Concat(a.Claims.IPv4, a.Claims.IPv6) {
+	for _, ip := range slices.Concat(claims.IPv4, claims.IPv6) {
 		ok := false
 		for _, ip2 := range cert.IPAddresses {
 			if ip2.Equal(ip) {
@@ -132,7 +134,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
 	for _, name := range cert.DNSNames {
 		got[name] = struct{}{}
 	}
-	for _, name := range a.Claims.DNS {
+	for _, name := range claims.DNS {
 		if _, ok := got[name]; !ok {
 			return nil, fmt.Errorf(
 				"No exact match for %s in provided X.509 cert",
@@ -140,7 +142,7 @@ func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
 			)
 		}
 	}
-	for _, name := range a.Claims.DNSWildcard {
+	for _, name := range claims.DNSWildcard {
 		if _, ok := got["*."+name]; !ok {
 			return nil, fmt.Errorf(
 				"No exact match for *.%s in provided X.509 cert",
@@ -149,24 +151,26 @@ func CheckAssertionValidForX509(a mtc.Assertion, start, end time.Time,
 		}
 	}
 
-	if len(a.Claims.Unknown) != 0 {
+	if len(claims.Unknown) != 0 {
 		return nil, errors.New("unknown claims")
 	}
 
 	// Check if subjects match.
-	if a.Subject.Type() != mtc.TLSSubjectType {
+	if subj.Type() != mtc.TLSSubjectType {
 		return nil, errors.New("Expected TLSSubjectType")
 	}
-	subjVerifier, err := a.Subject.(*mtc.TLSSubject).Verifier()
-	if err != nil {
-		return nil, fmt.Errorf("Assertion Subject: %w", err)
-	}
 
-	certSubject, err := mtc.NewTLSSubject(subjVerifier.Scheme(), cert.PublicKey)
+	certSubject, err := mtc.NewTLSSubject(
+		subj.(*mtc.AbridgedTLSSubject).SignatureScheme,
+		cert.PublicKey,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("NewTLSSubject(X.509 public key): %w", err)
 	}
-	if !bytes.Equal(certSubject.Info(), a.Subject.Info()) {
+
+	certTlsSubj := certSubject.Abridge().(*mtc.AbridgedTLSSubject)
+
+	if !bytes.Equal(certTlsSubj.Info(), subj.Info()) {
 		return nil, fmt.Errorf("Subjects don't match")
 	}
 
