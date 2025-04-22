@@ -961,9 +961,10 @@ func handleInspectEvidence(cc *cli.Context) error {
 	defer r.Close()
 
 	count := 0
-	err = mtc.UnmarshalEvidenceLists(
-		bufio.NewReader(r),
-		func(_ int, el *mtc.EvidenceList) error {
+
+	err = mtc.ForEach(
+		mtc.UnmarshalEvidenceLists(bufio.NewReader(r)),
+		func(el *mtc.EvidenceList) error {
 			count++
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 			err := writeEvidenceList(w, *el)
@@ -990,9 +991,9 @@ func handleInspectEntries(cc *cli.Context) error {
 	defer r.Close()
 
 	count := 0
-	err = mtc.UnmarshalBatchEntries(
-		bufio.NewReader(r),
-		func(_ int, be *mtc.BatchEntry) error {
+	err = mtc.ForEach(
+		mtc.UnmarshalBatchEntries(bufio.NewReader(r)),
+		func(be *mtc.BatchEntry) error {
 			count++
 			cs := be.Claims
 			subj := be.Subject

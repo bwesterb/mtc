@@ -739,19 +739,44 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		}
 	}
 
+	// Prepare index builder
+	indexPath := gopath.Join(dir, "index")
+	indexW, err := os.Create(indexPath)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", indexPath, err)
+	}
+
+	defer indexW.Close()
+	ib := internal.NewIndexBuilder(indexW)
+
+	// Prepare tree builder
+	tb := batch.NewTreeBuilder()
+
 	if !empty {
+		entryOffset := 0
+		evidenceOffset := 0
+		var entryKey [mtc.HashLen]byte
+
 		err = h.walkQueue(func(ar mtc.AssertionRequest) error {
+			oldEvidenceOffset := evidenceOffset
+			oldEntryOffset := entryOffset
+
 			// Skip assertions that are already expired.
 			if start, _ := batch.ValidityInterval(); ar.NotAfter.Before(start) {
 				return nil
 			}
 
 			be := mtc.NewBatchEntry(ar.Assertion, ar.NotAfter)
+			if err := be.Key(entryKey[:]); err != nil {
+				return fmt.Errorf("Computing key for %x: %w", ar.Checksum, err)
+			}
+
 			buf, err := be.MarshalBinary()
 			if err != nil {
 				return fmt.Errorf("Marshalling assertion %x: %w", ar.Checksum, err)
 			}
 
+			// Write out BatchEntry
 			_, err = besBW.Write(buf)
 			if err != nil {
 				return fmt.Errorf(
@@ -761,7 +786,10 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 					err,
 				)
 			}
+			entryOffset += len(buf)
 
+			// Prepare evidence when applicable: for instance by  deduplicating
+			// intermediates in umbilical chains.
 			evs := ar.Evidence
 			if ucBuilder != nil {
 				for i := range len(evs) {
@@ -777,6 +805,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 				}
 			}
 
+			// Write out Evidence
 			buf, err = evs.MarshalBinary()
 			if err != nil {
 				return fmt.Errorf("Marshalling evidence %x: %w", ar.Checksum, err)
@@ -790,6 +819,21 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 					evPath,
 					err,
 				)
+			}
+			evidenceOffset += len(buf)
+
+			// Feed entry to tree builder, and entry and evidence to
+			// index builder.
+			if err := tb.Push(&be); err != nil {
+				return fmt.Errorf("Building tree: %w", err)
+			}
+
+			if err := ib.Push(internal.IndexBuildEntry{
+				EvidenceOffset: uint64(oldEvidenceOffset),
+				Offset:         uint64(oldEntryOffset),
+				Key:            entryKey,
+			}); err != nil {
+				return fmt.Errorf("Building index: %w", err)
 			}
 
 			return nil
@@ -808,11 +852,6 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	if err != nil {
 		return fmt.Errorf("closing %s: %w", besPath, err)
 	}
-	besR, err := os.OpenFile(besPath, os.O_RDONLY, 0)
-	if err != nil {
-		return fmt.Errorf("opening %s: %w", besPath, err)
-	}
-	defer besR.Close()
 
 	err = evBW.Flush()
 	if err != nil {
@@ -823,11 +862,6 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	if err != nil {
 		return fmt.Errorf("closing %s: %w", evPath, err)
 	}
-	evR, err := os.OpenFile(evPath, os.O_RDONLY, 0)
-	if err != nil {
-		return fmt.Errorf("opening %s: %w", evPath, err)
-	}
-	defer evR.Close()
 
 	if ucBuilder != nil {
 		err = ucBuilder.Finish()
@@ -841,9 +875,9 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Compute tree
-	tree, err := batch.ComputeTree(bufio.NewReader(besR))
+	tree, err := tb.Finish()
 	if err != nil {
-		return fmt.Errorf("computing tree: %w", err)
+		return fmt.Errorf("finishing tree: %w", err)
 	}
 
 	treePath := gopath.Join(dir, "tree")
@@ -865,22 +899,9 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	}
 
 	// Compute index
-	_, err = besR.Seek(0, io.SeekStart)
+	err = ib.Finish()
 	if err != nil {
-		return fmt.Errorf("seeking %s to start: %w", besPath, err)
-	}
-
-	indexPath := gopath.Join(dir, "index")
-	indexW, err := os.Create(indexPath)
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", indexPath, err)
-	}
-
-	defer indexW.Close()
-
-	err = internal.ComputeIndex(besR, evR, indexW)
-	if err != nil {
-		return fmt.Errorf("computing %s to start: %w", indexPath, err)
+		return fmt.Errorf("finishing index: %w", err)
 	}
 
 	// Sign validity window
@@ -899,6 +920,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 	if err != nil {
 		return fmt.Errorf("writing to %s: %w", wPath, err)
 	}
+
 	return nil
 }
 

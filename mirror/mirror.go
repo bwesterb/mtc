@@ -303,15 +303,35 @@ func (h *Handle) fetchBatch(number uint32) error {
 	}
 
 	// Recompute tree
-	aasR, err := os.OpenFile(besPath, os.O_RDONLY, 0)
+	tb := batch.NewTreeBuilder()
+	besR, err := os.OpenFile(besPath, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", besPath, err)
 	}
-	defer aasR.Close()
+	defer besR.Close()
 
-	tree, err := batch.ComputeTree(bufio.NewReader(aasR))
+	besC := mtc.UnmarshalBatchEntries(bufio.NewReader(besR))
+	defer besC.Close()
+
+	var be mtc.BatchEntry
+	for {
+		err := besC.Pull(&be)
+		if err == mtc.EOF {
+			break
+		}
+
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", besPath, err)
+		}
+
+		if err := tb.Push(&be); err != nil {
+			return fmt.Errorf("building tree: %w", err)
+		}
+	}
+
+	tree, err := tb.Finish()
 	if err != nil {
-		return fmt.Errorf("computing tree: %w", err)
+		return fmt.Errorf("finishing tree: %w", err)
 	}
 
 	treePath := gopath.Join(dir, "tree")
