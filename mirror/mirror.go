@@ -364,6 +364,13 @@ func (h *Handle) fetchBatch(number uint32) error {
 			return err
 		}
 
+		newUc, err := frozencas.Open(ucPath)
+		if err != nil {
+			return fmt.Errorf("failed to open umbilical-certificates: %w", err)
+		}
+		defer newUc.Close()
+		ucs = append(ucs, newUc)
+
 		// Oldest batch to inspect for deduplicated umbilical certificate
 		end := int64(batch.Number) - int64(h.b.Params.ValidityWindowSize)
 		if end < 0 {
