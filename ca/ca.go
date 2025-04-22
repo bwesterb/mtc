@@ -139,10 +139,29 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 		return internal.ErrClosed
 	}
 
+	// Figure out what the next batch with assertions is likely going to be.
+	existingBatches, err := h.b.ListBatchRange()
+	if err != nil {
+		return fmt.Errorf("listing existing batches: %w", err)
+	}
+
+	nextBatchNumber := existingBatches.End // first unissued batch
+	if existingBatches.Len() == 0 {
+		nextBatchNumber = 0
+	}
+
+	// If CA is lagging, the first few batches issued will be empty: take
+	// the last active batch instead.
+	activeBatches := h.b.Params.ActiveBatches(time.Now())
+	if activeBatches.Contains(nextBatchNumber) {
+		nextBatchNumber = activeBatches.End - 1
+	}
+
 	nextBatch := mtc.Batch{
-		Number: h.b.Params.ActiveBatches(time.Now()).End + 1,
+		Number: nextBatchNumber,
 		CA:     &h.b.Params,
 	}
+
 	batchStart, batchEnd := nextBatch.ValidityInterval()
 	notAfter := make([]time.Time, len(ars)) // Corrected notAfter time.
 
