@@ -1023,6 +1023,7 @@ func handleInspectEntries(cc *cli.Context) error {
 			be.Key(key[:])
 			w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 			fmt.Fprintf(w, "key\t%x\n", key)
+			fmt.Fprintf(w, "not_after\t%s\n", be.NotAfter.UTC())
 			fmt.Fprintf(w, "subject_type\t%s\n", subj.Type())
 			switch subj := subj.(type) {
 			case *mtc.AbridgedTLSSubject:
@@ -1066,7 +1067,7 @@ func handleInspectCaParams(cc *cli.Context) error {
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
 	fmt.Fprintf(w, "issuer\t%s\n", p.Issuer)
 	fmt.Fprintf(w, "start_time\t%d\t%s\n", p.StartTime,
-		time.Unix(int64(p.StartTime), 0))
+		time.Unix(int64(p.StartTime), 0).UTC())
 	fmt.Fprintf(w, "batch_duration\t%d\t%s\n", p.BatchDuration,
 		time.Second*time.Duration(p.BatchDuration))
 	fmt.Fprintf(w, "life_time\t%d\t%s\n", p.Lifetime,
