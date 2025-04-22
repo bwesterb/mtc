@@ -422,9 +422,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 		evs mtc.EvidenceList
 	)
 
-	entryNumber := -1
-	for {
-		entryNumber++
+	for entryNumber := 0; ; entryNumber++ {
 		err1 := besC.Pull(&be)
 		err2 := evsC.Pull(&evs)
 		if err1 == mtc.EOF && err1 == err2 {
@@ -441,7 +439,7 @@ func (h *Handle) fetchBatch(number uint32) error {
 			return fmt.Errorf("building tree: %w", err)
 		}
 
-		// TODO Would the spec allow a small NotAfter?
+		// TODO Would the spec allow a NotAfter before batchStart?
 		//		What about not_after = batchStart?
 		if be.NotAfter.After(batchEnd) || be.NotAfter.Before(batchStart) {
 			return fmt.Errorf(

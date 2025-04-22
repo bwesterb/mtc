@@ -89,7 +89,7 @@ func GetChainFromTLSServer(addr string) (chain []*x509.Certificate, err error) {
 	return
 }
 
-// Checks whether the given claims (to be) issued for the subject  is
+// Checks whether the given claims (to be) issued for the subject are
 // consistent with the given X.509 certificate chain and accepted roots
 // for the given validity interval. The claims are allowed to cover less than
 // the certificate: eg, only example.com where the certificate
