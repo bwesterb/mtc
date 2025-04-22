@@ -85,11 +85,14 @@ type UnknownEvidence struct {
 type EvidencePolicyType uint16
 
 const (
+	// No policy set.
+	UnsetEvidencePolicy EvidencePolicyType = iota
+
 	// Policy requiring no evidence to queue an assertion request.
-	EmptyEvidencePolicyType EvidencePolicyType = iota
+	EmptyEvidencePolicy
 
 	// Policy requiring an X509 chain to an accepted root to queue an assertion request.
-	UmbilicalEvidencePolicyType
+	UmbilicalEvidencePolicy
 )
 
 // Represents a claim we do not how to interpret.

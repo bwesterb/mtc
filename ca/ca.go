@@ -48,9 +48,8 @@ type Handle struct {
 	// Covered by own lock
 	revocationChecker *revocation.Checker
 
-	// Mutable covered by d.mux
-	signer         mtc.Signer
-	umbilicalRoots *x509.CertPool
+	// Mutable covered by b.mux
+	signer mtc.Signer
 }
 
 // Load private state of Merkle Tree CA, and acquire lock.
@@ -82,7 +81,9 @@ func Open(path string) (*Handle, error) {
 		return nil, fmt.Errorf("parsing %s: %w", h.skPath(), err)
 	}
 	switch h.b.Params.EvidencePolicy {
-	case mtc.EmptyEvidencePolicyType, mtc.UmbilicalEvidencePolicyType:
+	case mtc.EmptyEvidencePolicy, mtc.UmbilicalEvidencePolicy:
+	case mtc.UnsetEvidencePolicy:
+		return nil, errors.New("evidence policy unset")
 	default:
 		return nil, fmt.Errorf(
 			"unknown evidence policy: %d",
@@ -148,7 +149,11 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 	// We release the lock so that the potentially slow revocation checks
 	// don't block the whole CA. First copy the info we need from the Handle.
 	evidencePolicy := h.b.Params.EvidencePolicy
-	revChecker, umbRoots, err := h.getRevocationCheckerAndUmbilicalRoots()
+	revChecker, err := h.getRevocationChecker()
+	if err != nil {
+		return err
+	}
+	umbRoots, err := h.b.GetUmbilicalRoots()
 	if err != nil {
 		return err
 	}
@@ -168,8 +173,10 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 		}
 
 		switch evidencePolicy {
-		case mtc.EmptyEvidencePolicyType:
-		case mtc.UmbilicalEvidencePolicyType:
+		case mtc.UnsetEvidencePolicy:
+			return errors.New("No evidence policy set")
+		case mtc.EmptyEvidencePolicy:
+		case mtc.UmbilicalEvidencePolicy:
 			var (
 				err   error
 				chain []*x509.Certificate
@@ -195,8 +202,9 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 				notAfter[i] = chain[0].NotAfter
 			}
 
-			_, err = umbilical.CheckAssertionValidForX509(
-				ar.Assertion,
+			_, err = umbilical.CheckClaimsValidForX509(
+				ar.Assertion.Claims,
+				ar.Assertion.Subject.Abridge(),
 				batchStart,
 				notAfter[i],
 				chain,
@@ -301,44 +309,32 @@ func (h *Handle) Queue(ar mtc.AssertionRequest) error {
 	})
 }
 
-// Returns a revocation checker and a copy of the trusted umbilical roots.
+// Returns a revocation checker.
 //
-// Requires write lock on mux.
-func (h *Handle) getRevocationCheckerAndUmbilicalRoots() (
-	*revocation.Checker, *x509.CertPool, error) {
-	if h.b.Params.EvidencePolicy != mtc.UmbilicalEvidencePolicyType {
-		return nil, nil, nil
+// Requires write lock on b.mux.
+func (h *Handle) getRevocationChecker() (*revocation.Checker, error) {
+	if h.b.Params.EvidencePolicy != mtc.UmbilicalEvidencePolicy {
+		return nil, nil
 	}
 
 	if h.revocationChecker != nil {
-		return h.revocationChecker, h.umbilicalRoots.Clone(), nil
+		return h.revocationChecker, nil
 	}
 
 	revocationChecker, err := revocation.NewChecker(revocation.Config{
 		Cache: h.revocationCachePath(),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"creating revocation checker from %s: %w",
 			h.revocationCachePath(),
 			err,
 		)
 	}
-	umbilicalRoots := x509.NewCertPool()
-	pemCerts, err := os.ReadFile(h.umbilicalRootsPath())
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", h.umbilicalRootsPath(), err)
-	}
-	// TODO use AddCertWithConstraint to deal with constrained roots:
-	// https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/root_store.md#constrained-roots
-	if !umbilicalRoots.AppendCertsFromPEM(pemCerts) {
-		return nil, nil, fmt.Errorf("failed to append root certs")
-	}
 
 	h.revocationChecker = revocationChecker
-	h.umbilicalRoots = umbilicalRoots
 
-	return h.revocationChecker, h.umbilicalRoots, nil
+	return h.revocationChecker, nil
 }
 
 func (h *Handle) skPath() string {
@@ -351,10 +347,6 @@ func (h *Handle) queuePath() string {
 
 func (h *Handle) revocationCachePath() string {
 	return gopath.Join(h.b.Path, "revocation-cache")
-}
-
-func (h *Handle) umbilicalRootsPath() string {
-	return gopath.Join(h.b.Path, "www", "mtc", "v1", "umbilical-roots.pem")
 }
 
 // Drop batches that don't need to be stored anymore.
@@ -534,7 +526,7 @@ func (h *Handle) issueBatch(number uint32, empty bool) error {
 		"evidence",
 		"index",
 	}
-	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicy {
 		toCheck = append(toCheck, "umbilical-certificates")
 	}
 	err = assertFilesEqual(dir1, dir2, toCheck)
@@ -727,7 +719,7 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 		ucBuilder *frozencas.Builder
 		ucW       *os.File
 	)
-	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicy {
 		ucW, err = os.Create(ucPath)
 		if err != nil {
 			return fmt.Errorf("creating %s: %w", ucPath, err)
@@ -960,7 +952,7 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	if opts.StorageDuration.Nanoseconds()%opts.BatchDuration.Nanoseconds() != 0 {
 		return nil, errors.New("StorageDuration has to be a multiple of BatchDuration")
 	}
-	if opts.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
+	if opts.EvidencePolicy == mtc.UmbilicalEvidencePolicy {
 		if opts.UmbilicalRootsPEM == nil {
 			return nil, errors.New("UmbilicalRoots is required with the 'umbilical' evidence policy")
 		}
@@ -978,6 +970,10 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	params.ServerPrefix = opts.ServerPrefix
 	params.Issuer = opts.Issuer
 	params.EvidencePolicy = opts.EvidencePolicy
+
+	if params.EvidencePolicy == mtc.UnsetEvidencePolicy {
+		params.EvidencePolicy = mtc.EmptyEvidencePolicy
+	}
 
 	if opts.SignatureScheme == 0 {
 		opts.SignatureScheme = mtc.TLSMLDSA87
@@ -1014,9 +1010,9 @@ func New(path string, opts NewOpts) (*Handle, error) {
 	}
 
 	// Accepted roots
-	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicyType {
-		if err := os.WriteFile(h.umbilicalRootsPath(), opts.UmbilicalRootsPEM, 0o644); err != nil {
-			return nil, fmt.Errorf("Writing %s: %w", h.umbilicalRootsPath(), err)
+	if h.b.Params.EvidencePolicy == mtc.UmbilicalEvidencePolicy {
+		if err := os.WriteFile(h.b.UmbilicalRootsPath(), opts.UmbilicalRootsPEM, 0o644); err != nil {
+			return nil, fmt.Errorf("Writing %s: %w", h.b.UmbilicalRootsPath(), err)
 		}
 	}
 
