@@ -772,9 +772,21 @@ func (h *Handle) issueBatchTo(dir string, batch mtc.Batch, empty bool) error {
 			oldEvidenceOffset := evidenceOffset
 			oldEntryOffset := entryOffset
 
+			batchStart, batchEnd := batch.ValidityInterval()
+
 			// Skip assertions that are already expired.
-			if start, _ := batch.ValidityInterval(); ar.NotAfter.Before(start) {
+			if ar.NotAfter.Before(batchStart) {
 				return nil
+			}
+
+			if ar.NotAfter.After(batchEnd) {
+				slog.Warn(
+					"queued AssertionRequest with not_after after batch end",
+					"checksum", ar.Checksum,
+					"batchEnd", batchEnd,
+					"notAfter", ar.NotAfter,
+				)
+				ar.NotAfter = batchEnd
 			}
 
 			be := mtc.NewBatchEntry(ar.Assertion, ar.NotAfter)
