@@ -5,9 +5,9 @@ Merkle Tree Certificates for TLS
 
 Implementation of [Merkle Tree Certificates for TLS](
     https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html)
-    in Go. This contains a Certification Authority (CA), mirror, and
+    in Go. This contains a Certification Authority (CA), Mirror, and
     code to verify certificates.
-This does not contain integration with TLS (yet) or the ACME bits.
+This does not contain integration with TLS (yet) or the ACME bits (yet).
 At the moment we differ from `-04` and `main` branch of the specification,
     by including some [unmerged PRs](https://github.com/davidben/merkle-tree-certs/pulls).
 
@@ -94,14 +94,14 @@ evidence-list (0 entries)
 ```
 
 An assertion request can contain two bits of extra information besides
-the assertion itself. First is a `not_after` field to request to limit
+the assertion itself. First is a `not_after` field that limits
 the validity of the assertion when published.
 The second is optional "evidence" that's published alongside the
 assertions. In the future this could be used for serialized DNSSEC proofs.
 
 ### Batches, merkle trees and signed validity windows
 
-An MTC CA doesn't give you a certificate for an assertion request immediately.
+An MTCA doesn't give you a certificate for an assertion request immediately.
 Instead, assertions are queued and issued in **batches** with a fixed rhythm,
 for instance a batch is issued once every hour.
 All assertions in a single batch by default are valid for the same period of
@@ -249,7 +249,7 @@ $ find .
 
 We see an `0` and `1` batch have been created. `latest` is a symlink to `1`.
 
-Because we waited more than 5 minutes between creating the CA,
+Because we waited more than 5 minutes between creating the CA
 and starting issuance, both batches `0` and `1` were ready to be issued.
 The assertions have been issued in batch `1` and batch `0` is empty.
 
