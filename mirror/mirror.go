@@ -95,7 +95,13 @@ func getUrl(serverPrefix, path string) string {
 		scheme = "http"
 	}
 
-	return scheme + "://" + serverPrefix + "/mtc/v1/" + path
+	return fmt.Sprintf(
+		"%s://%s/mtc/%s/%s",
+		scheme,
+		serverPrefix,
+		mtc.ApiVersion,
+		path,
+	)
 }
 
 // New creates a new mirror for the Merkle Tree CA at NewOpts.ServerPrefix.

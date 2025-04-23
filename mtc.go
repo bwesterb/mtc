@@ -40,6 +40,10 @@ type CAParams struct {
 
 const (
 	HashLen = 32
+
+	// Version of the API we implement. It's close to draft -04, but there
+	// are changes on top, hence the "b".
+	ApiVersion = "v04b"
 )
 
 type ClaimType uint16
