@@ -285,7 +285,7 @@ func (h *Handle) queueMultiple(ars []mtc.AssertionRequest) error {
 				return err
 			}
 
-			// Check if there is already an assertion queued
+			// Check if this assertion is already queued
 			buf2 := bucket.Get(key[:])
 			if buf2 != nil {
 				var ar2 mtc.AssertionRequest
