@@ -1,29 +1,30 @@
 package main
 
 import (
+	"bufio"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"maps"
+	"net"
+	"os"
+	"runtime/pprof"
 	"slices"
+	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/bwesterb/mtc"
 	"github.com/bwesterb/mtc/ca"
 	"github.com/bwesterb/mtc/mirror"
 	"github.com/bwesterb/mtc/umbilical"
 	"github.com/bwesterb/mtc/umbilical/frozencas"
+
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/cryptobyte"
-
-	"bufio"
-	"crypto/x509"
-	"encoding/hex"
-	"encoding/pem"
-	"fmt"
-	"io"
-	"net"
-	"os"
-	"runtime/pprof"
-	"text/tabwriter"
-	"time"
 )
 
 var (
@@ -1085,8 +1086,30 @@ func handleInspectCaParams(cc *cli.Context) error {
 	return nil
 }
 
+var appDescription = strings.TrimSpace(`
+This utility provides various functions to work with Merkle Tree Certificates.
+See http://github.com/bwesterb/mtc/ for an introduction.
+
+Commands under "mtc ca" are used to manage a Merkle Tree CA.
+"mtc ca new" creates a CA.  "mtc ca queue" x queues an assertion to be
+certified.  "mtc ca issue" issues a batch.  See "mtc ca -h" for more
+commands and info.
+
+Commands under  "mtc mirror" are used to manage a mirror of a Merkle Tree CA.
+"mtc mirror new" sets up a new mirror and "mtc mirror update" syncs it
+with the upstream CA.  See "mtc mirror -h" for more commands and info.
+
+Commands under "mtc inpsect" allow you to investigate the contents
+of Merkle Tree Certificates and various other files present in a CA / mirror.
+
+With "mtc new-assertion-request" you can create a request for a new
+Merkle Tree Certificate that can be sent to a CA.
+`)
+
 func main() {
 	app := &cli.App{
+		Usage:       "Merkle Tree Certificates utility",
+		Description: appDescription,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "cpuprofile",
@@ -1095,7 +1118,8 @@ func main() {
 		},
 		Commands: []*cli.Command{
 			{
-				Name: "ca",
+				Name:  "ca",
+				Usage: "manage CA",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:    "ca-path",
@@ -1206,7 +1230,8 @@ func main() {
 				},
 			},
 			{
-				Name: "mirror",
+				Name:  "mirror",
+				Usage: "manage mirror of a CA",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:    "mirror-path",
@@ -1244,7 +1269,8 @@ func main() {
 				},
 			},
 			{
-				Name: "inspect",
+				Name:  "inspect",
+				Usage: "inspect various MTC related binary files",
 				Subcommands: []*cli.Command{
 					{
 						Name:      "ca-params",
