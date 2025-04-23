@@ -798,7 +798,7 @@ func (p *CAParams) NewTreeHeads(prevHeads, root []byte) ([]byte, error) {
 			len(root),
 		)
 	}
-	return append(root, prevHeads[HashLen:]...), nil
+	return append(root, prevHeads[:expected-HashLen]...), nil
 }
 
 func (batch *Batch) Anchor() TrustAnchorIdentifier {
