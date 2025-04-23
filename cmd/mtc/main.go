@@ -1091,7 +1091,7 @@ This utility provides various functions to work with Merkle Tree Certificates.
 See http://github.com/bwesterb/mtc/ for an introduction.
 
 Commands under "mtc ca" are used to manage a Merkle Tree CA.
-"mtc ca new" creates a CA.  "mtc ca queue" x queues an assertion to be
+"mtc ca new" creates a CA.  "mtc ca queue" queues an assertion to be
 certified.  "mtc ca issue" issues a batch.  See "mtc ca -h" for more
 commands and info.
 
@@ -1099,7 +1099,7 @@ Commands under  "mtc mirror" are used to manage a mirror of a Merkle Tree CA.
 "mtc mirror new" sets up a new mirror and "mtc mirror update" syncs it
 with the upstream CA.  See "mtc mirror -h" for more commands and info.
 
-Commands under "mtc inpsect" allow you to investigate the contents
+Commands under "mtc inspect" allow you to investigate the contents
 of Merkle Tree Certificates and various other files present in a CA / mirror.
 
 With "mtc new-assertion-request" you can create a request for a new
