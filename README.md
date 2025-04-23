@@ -82,7 +82,7 @@ $ mtc new-assertion-request --tls-pem p256.pub --dns example.com --ip4 198.51.10
 Let's check it using `mtc inspect`:
 
 ```
-$ ./mtc inspect assertion-request my-asr
+$ mtc inspect assertion-request my-asr
 checksum         2024bdbffe399acca37d299a03c047aa33ef596ae471c17698a0566d00951bd9
 not_after        unset
 subject_type     TLS
@@ -97,7 +97,8 @@ An assertion request can contain two bits of extra information besides
 the assertion itself. First is a `not_after` field that limits
 the validity of the assertion when published.
 The second is optional "evidence" that's published alongside the
-assertions. In the future this could be used for serialized DNSSEC proofs.
+assertions. In the future this could for instance be used for
+serialized DNSSEC proofs.
 
 ### Batches, merkle trees and signed validity windows
 
@@ -126,7 +127,12 @@ $ mtc ca new --batch-duration 5m --lifetime 1h 62253.12.15 ca.example.com/path
 
 This creates a new MTC CA in the current working directory. It's configured
 to issue a batch every 5 minutes, and for each batch to be valid for an hour.
-It is identified by the [trust anchor identifier](
+For a real CA we'd want batch durations in the order of an hour,
+and a lifetime of a week or two. In this demo we shorten things a bit, so
+we don't have to wait too long.
+
+The CA is configured to be hosted at `https://ca.example.com/path` and
+to be identified by the [trust anchor identifier](
     https://datatracker.ietf.org/doc/draft-ietf-tls-trust-anchor-ids/) 62253.12.15.
 You can get your own by requesting a [private enterprise number here](
     https://www.iana.org/assignments/enterprise-numbers/).
@@ -155,13 +161,13 @@ is `ca-params`, which contains the information about the CA:
 ```
 $ mtc inspect ca-params www/mtc/v04b/ca-params
 issuer                 62253.12.15
-start_time             1745415825 2025-04-23 13:43:45 +0000 UTC
+start_time             1745420554 2025-04-23 15:02:34 +0000 UTC
 batch_duration         300        5m0s
 life_time              3600       1h0m0s
 storage_window_size    24         2h0m0s
 validity_window_size   12
 server_prefix          ca.example.com/path
-public_key fingerprint ml-dsa-87:52f3488ca58a51a3d8d4b5d054828e5ebcc3767a0732da374f608f766cf8bad2
+public_key fingerprint ml-dsa-87:84489bcb42b411a85d163ae95e7deb92b106a75840819a985e44d0e01ae3238e
 ```
 
 The `batches` folder is empty, because there are no batches issued yet.
@@ -177,8 +183,8 @@ created earlier with `mtc new-assertion-request`:
 ```
 $ mtc ca queue -i my-asr 
 $ mtc ca show-queue
-checksum         3241885a438bd82f21d193fe7be9e87a24f5b6aac899bd780b1604da0ec39f48
-not_after        2025-04-23 14:48:44 +0000 UTC
+checksum         91723d11282646f6e798aaeb4ac8515168657c3df4622bc646437b4187a5deb7
+not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256
 public_key_hash  20b57b9c55dab26db14fb6cc801b7d7294cbf448abb1196e1ffc19d73013498a
@@ -189,16 +195,13 @@ evidence-list (0 entries)
 Total number of assertion requests in queue: 1
 ```
 
-(We can pass the checksum from `new-assertion-request` with `--checksum`
-to make sure the assertion wasn't corrupted.)
-
 We can also queue an assertion request ad hoc:
 
 ```
 $ mtc ca queue --tls-pem p256.pub -d other.example.com -d second.example.com
 $ mtc ca show-queue | tail -n 10
-checksum         3241885a438bd82f21d193fe7be9e87a24f5b6aac899bd780b1604da0ec39f48
-not_after        2025-04-23 14:48:44 +0000 UTC
+checksum         91723d11282646f6e798aaeb4ac8515168657c3df4622bc646437b4187a5deb7
+not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256
 public_key_hash  20b57b9c55dab26db14fb6cc801b7d7294cbf448abb1196e1ffc19d73013498a
@@ -212,10 +215,10 @@ Total number of assertion requests in queue: 2
 Let's issue our first batch.
 
 ```
-$ mtc ca issue   
-2025/04/23 15:50:58 INFO Starting issuance time=2025-04-23T13:50:58.023Z
-2025/04/23 15:50:58 INFO Current state expectedStored=0,1 expectedActive=0,1 existingBatches=⌀
-2025/04/23 15:50:58 INFO To issue batches=0,1
+$ mtc ca issue
+2025/04/23 17:05:20 INFO Starting issuance time=2025-04-23T15:05:20.664Z
+2025/04/23 17:05:20 INFO Current state expectedStored=0 expectedActive=0 existingBatches=⌀
+2025/04/23 17:05:20 INFO To issue batches=0
 ```
 
 And let's check:
@@ -237,40 +240,28 @@ $ find .
 ./www/mtc/v04b/batches/0/evidence
 ./www/mtc/v04b/batches/0/index
 ./www/mtc/v04b/batches/latest
-./www/mtc/v04b/batches/1
-./www/mtc/v04b/batches/1/validity-window
-./www/mtc/v04b/batches/1/tree
-./www/mtc/v04b/batches/1/entries
-./www/mtc/v04b/batches/1/evidence
-./www/mtc/v04b/batches/1/index
 ./queue
 ./tmp
 ```
 
-We see an `0` and `1` batch have been created. `latest` is a symlink to `1`.
+We see batch `0` has been created. `latest` is a symlink to to `0`.
 
-Because we waited more than 5 minutes between creating the CA
-and starting issuance, both batches `0` and `1` were ready to be issued.
-The assertions have been issued in batch `1` and batch `0` is empty.
-
-Now, let's have a look at each batch. The `entries` file is essentially
+Now, let's have a look at the batch. The `entries` file is essentially
 the list of assertions: the difference between a regular assertion
 and an entry is that with an entry, the public key has been replaced
 by the hash of the public key.
 
 ```
-$ mtc inspect entries www/mtc/v04b/batches/0/entries 
-Total number of entries: 0
-$ mtc inspect entries www/mtc/v04b/batches/1/entries
+$ mtc inspect entries www/mtc/v04b/batches/0/entries
 key              0b65c8a5f69e88fd1eb58dff4d317f6173bd31773e14d99ace88a2aa7062fdd9
-not_after        2025-04-23 14:48:44 +0000 UTC
+not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256
 public_key_hash  20b57b9c55dab26db14fb6cc801b7d7294cbf448abb1196e1ffc19d73013498a
 dns              [other.example.com second.example.com]
 
 key              78b5ccc905b693659bf6581011f8efb17fd7aedf9ca70a196a22923f560feeca
-not_after        2025-04-23 14:48:44 +0000 UTC
+not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256
 public_key_hash  20b57b9c55dab26db14fb6cc801b7d7294cbf448abb1196e1ffc19d73013498a
@@ -284,11 +275,10 @@ The `validity-window` is the signed validity window: the tree heads of
 the currently valid batches:
 
 ```
-$ mtc inspect -ca-params www/mtc/v04b/ca-params validity-window www/mtc/v04b/batches/1/validity-window 
+$ mtc inspect -ca-params www/mtc/v04b/ca-params validity-window www/mtc/v04b/batches/0/validity-window               
 signature       ✅
-batch_number    1
-tree_heads[1]   074e46cfebf57e3e21bea9b8eb6f446060db668926a041aa0bc2b13e0708dd3e
-tree_heads[0]   a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
+batch_number    0
+tree_heads[0]   043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 tree_heads[-1]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-2]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-3]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
@@ -299,6 +289,7 @@ tree_heads[-7]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-8]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-9]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-10] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
+tree_heads[-11] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 ```
 
 We need to pass the `ca-params` file to be able to parse the file, and
@@ -308,17 +299,17 @@ the placeholder value for an empty tree.)
 The `tree` file contains the Merkle tree.
 
 ```
-$ mtc inspect tree www/mtc/v04b/batches/1/tree 
+$ mtc inspect tree www/mtc/v04b/batches/0/tree 
 number of leaves 2
 number of nodes  3
-tree head        074e46cfebf57e3e21bea9b8eb6f446060db668926a041aa0bc2b13e0708dd3e
+tree head        043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 ```
 
 The `evidence` file contains the optional evidence that can be provided
 with the assertion request. We did not pass any, so they're empty:
 
 ```
-$ mtc inspect evidence www/mtc/v04b/batches/1/evidence
+$ mtc inspect evidence www/mtc/v04b/batches/0/evidence
 evidence-list (0 entries)
 
 evidence-list (0 entries)
@@ -330,7 +321,7 @@ Finally, the `index` file allows a quick lookup in `entries` (and `evidence`)
 by key (hash of the assertion):
 
 ```
-$ mtc inspect index www/mtc/v04b/batches/1/index
+$ mtc inspect index www/mtc/v04b/batches/0/index
                                                              key   seqno  offset
 0b65c8a5f69e88fd1eb58dff4d317f6173bd31773e14d99ace88a2aa7062fdd9       0       0       0
 78b5ccc905b693659bf6581011f8efb17fd7aedf9ca70a196a22923f560feeca       1      91       3
@@ -350,9 +341,9 @@ $ mtc ca queue --tls-pem p256.pub -d 1.example.com
 $ mtc ca queue --tls-pem p256.pub -d 2.example.com
 $ mtc ca queue --tls-pem p256.pub -d 3.example.com
 $ mtc ca issue
-2025/04/23 16:03:35 INFO Starting issuance time=2025-04-23T14:03:35.653Z
-2025/04/23 16:03:35 INFO Current state expectedStored=0,…,3 expectedActive=0,…,3 existingBatches=0,1
-2025/04/23 16:03:35 INFO To issue batches=2,3
+2025/04/23 17:12:45 INFO Starting issuance time=2025-04-23T15:12:45.869Z
+2025/04/23 17:12:45 INFO Current state expectedStored=0,…,2 expectedActive=0,…,2 existingBatches=0
+2025/04/23 17:12:45 INFO To issue batches=1,2
 $ find .
 ```
 .
@@ -367,6 +358,7 @@ $ find .
 ./www/mtc/v04b/batches/0/tree
 ./www/mtc/v04b/batches/0/entries
 ./www/mtc/v04b/batches/0/evidence
+./www/mtc/v04b/batches/0/latest
 ./www/mtc/v04b/batches/0/index
 ./www/mtc/v04b/batches/latest
 ./www/mtc/v04b/batches/1
@@ -375,12 +367,6 @@ $ find .
 ./www/mtc/v04b/batches/1/entries
 ./www/mtc/v04b/batches/1/evidence
 ./www/mtc/v04b/batches/1/index
-./www/mtc/v04b/batches/3
-./www/mtc/v04b/batches/3/validity-window
-./www/mtc/v04b/batches/3/tree
-./www/mtc/v04b/batches/3/entries
-./www/mtc/v04b/batches/3/evidence
-./www/mtc/v04b/batches/3/index
 ./www/mtc/v04b/batches/2
 ./www/mtc/v04b/batches/2/validity-window
 ./www/mtc/v04b/batches/2/tree
@@ -391,19 +377,17 @@ $ find .
 ./tmp
 ```
 
-As we waited a bit longer (again), the current batch is `3`, which will contain
-the queued assertions. The batch `2` in between will be empty.
-
-Now `latest` points to `3`, and its signed validity window is more interesting.
+As we waited a bit longer, the current batch is `2`, which will contain
+the queued assertions. The batch `1` in between will be empty.
+Now `latest` points to `2`, and its signed validity window is more interesting.
 
 ```
-$ mtc inspect -ca-params www/mtc/v04b/ca-params validity-window www/mtc/v04b/batches/3/validity-window
+$ mtc inspect -ca-params www/mtc/v04b/ca-params validity-window www/mtc/v04b/batches/1/validity-window
 signature      ✅
-batch_number   3
-tree_heads[3]  73bff824738bd56b400477ead88a50c61a449c390d539412e95c763f8da1e041
-tree_heads[2]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
-tree_heads[1]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
-tree_heads[0]  a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
+batch_number   2
+tree_heads[2]  03a95ba3c354e2b0eb4bea9b111dbc8b97e2c90b85ddcc63d4b635b16f77005d
+tree_heads[1]  7ceda88ec6c8e34ecacde47588e2605fb86192b94ca96cb897fa6ff442198c8c
+tree_heads[0]  043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 tree_heads[-1] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-2] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-3] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
@@ -412,6 +396,7 @@ tree_heads[-5] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-6] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-7] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 tree_heads[-8] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
+tree_heads[-9] a7b081f10c7116c30781a957c3f52625c4d831c8d61ceea021db101ab3c901cf
 ```
 
 ### Creating a certificate
@@ -437,14 +422,14 @@ ip4              [198.51.100.60]
 
 proof_type           merkle_tree_sha256
 CA OID               62253.12.15
-Batch number         1
+Batch number         0
 index                1
-recomputed tree head 074e46cfebf57e3e21bea9b8eb6f446060db668926a041aa0bc2b13e0708dd3e
+recomputed tree head 043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 authentication path
- e1c642c6da3e8665d83cc359e830929386b11658c55146e88e79c2c466b8cecb
+ 8964f010faa9e499b21917f8792b541b7b1ac19f313a5d53094c698c2edc330b
 ```
 
-This is indeed the root of batch `1`, and so this certificate is valid.
+This is indeed the root of batch `0`, and so this certificate is valid.
 
 ### Run CA as server
 
@@ -465,13 +450,13 @@ Get and inspect CA parameters.
 $ curl -s "http://localhost:8080/mtc/v04b/ca-params" -o ca-params
 $ mtc inspect ca-params ca-params
 issuer                 62253.12.15
-start_time             1745415825 2025-04-23 13:43:45 +0000 UTC
+start_time             1745420554 2025-04-23 15:02:34 +0000 UTC
 batch_duration         300        5m0s
 life_time              3600       1h0m0s
 storage_window_size    24         2h0m0s
 validity_window_size   12
 server_prefix          ca.example.com/path
-public_key fingerprint ml-dsa-87:52f3488ca58a51a3d8d4b5d054828e5ebcc3767a0732da374f608f766cf8bad2
+public_key fingerprint ml-dsa-87:84489bcb42b411a85d163ae95e7deb92b106a75840819a985e44d0e01ae3238e
 ```
 
 Queue up the assertion created in above.
@@ -484,7 +469,7 @@ $ curl -X POST "http://localhost:8080/ca/queue" --data-binary "@my-asr" -w "%{ht
 After it's been issued, we can get the certificate via the `/ca/cert` endpoint:
 
 ```
-$ curl -X POST "http://localhost:8080/ca/cert" --data-binary "@my-assertion" -o my-cert
+$ curl -X POST "http://localhost:8080/ca/cert" --data-binary "@my-asr" -o my-cert
 $ mtc inspect -ca-params ca-params cert my-cert
 subject_type     TLS
 signature_scheme p256
@@ -494,9 +479,9 @@ ip4              [198.51.100.60]
 
 proof_type           merkle_tree_sha256
 CA OID               62253.12.15
-Batch number         1
+Batch number         0
 index                1
-recomputed tree head 074e46cfebf57e3e21bea9b8eb6f446060db668926a041aa0bc2b13e0708dd3e
+recomputed tree head 043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 authentication path
- e1c642c6da3e8665d83cc359e830929386b11658c55146e88e79c2c466b8cecb
+ 8964f010faa9e499b21917f8792b541b7b1ac19f313a5d53094c698c2edc330b
 ```
