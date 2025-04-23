@@ -225,7 +225,6 @@ And let's check:
 
 ```
 $ find .
-```
 .
 ./signing.key
 ./www
@@ -345,7 +344,6 @@ $ mtc ca issue
 2025/04/23 17:12:45 INFO Current state expectedStored=0,…,2 expectedActive=0,…,2 existingBatches=0
 2025/04/23 17:12:45 INFO To issue batches=1,2
 $ find .
-```
 .
 ./signing.key
 ./www
