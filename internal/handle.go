@@ -108,7 +108,7 @@ func (h *Handle) LatestBatchPath() string {
 }
 
 func (h *Handle) BatchesPath() string {
-	return gopath.Join(h.Path, "www", "mtc", "v1", "batches")
+	return gopath.Join(h.Path, "www", "mtc", mtc.ApiVersion, "batches")
 }
 
 func (h *Handle) TmpPath() string {
@@ -116,11 +116,11 @@ func (h *Handle) TmpPath() string {
 }
 
 func (h *Handle) ParamsPath() string {
-	return gopath.Join(h.Path, "www", "mtc", "v1", "ca-params")
+	return gopath.Join(h.Path, "www", "mtc", mtc.ApiVersion, "ca-params")
 }
 
 func (h *Handle) UmbilicalRootsPath() string {
-	return gopath.Join(h.Path, "www", "mtc", "v1", "umbilical-roots.pem")
+	return gopath.Join(h.Path, "www", "mtc", mtc.ApiVersion, "umbilical-roots.pem")
 }
 
 func (h *Handle) LockFolder() error {
