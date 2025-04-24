@@ -113,9 +113,9 @@ For each batch, the CA computes a [Merkle tree](
     https://en.wikipedia.org/wiki/Merkle_tree).
 This condenses all the assertions in that batch into a single **tree head** hash.
 For every batch, the CA signs that tree head together with all the tree heads
-    of the currently valid batches. This signature, together with those
-    signed tree heads is called the **signed validity window** for that batch,
-    which is published alongside the assertions.
+of the currently valid batches. This signature, together with those
+signed tree heads is called the **signed validity window** for that batch,
+which is published alongside the assertions.
 
 ### Creating a CA
 
@@ -183,7 +183,6 @@ created earlier with `mtc new-assertion-request`:
 ```
 $ mtc ca queue -i my-asr 
 $ mtc ca show-queue
-checksum         91723d11282646f6e798aaeb4ac8515168657c3df4622bc646437b4187a5deb7
 not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256
@@ -200,7 +199,6 @@ We can also queue an assertion request ad hoc:
 ```
 $ mtc ca queue --tls-pem p256.pub -d other.example.com -d second.example.com
 $ mtc ca show-queue | tail -n 10
-checksum         91723d11282646f6e798aaeb4ac8515168657c3df4622bc646437b4187a5deb7
 not_after        2025-04-23 16:02:33 +0000 UTC
 subject_type     TLS
 signature_scheme p256

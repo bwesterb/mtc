@@ -501,7 +501,7 @@ func handleCaShowQueue(cc *cli.Context) error {
 	err = h.WalkQueue(func(ar mtc.AssertionRequest) error {
 		count++
 		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-		err = writeAssertionRequest(w, ar)
+		err = writeAssertionRequest(w, ar, false)
 		if err != nil {
 			return err
 		}
@@ -812,8 +812,11 @@ func handleInspectTree(cc *cli.Context) error {
 	return nil
 }
 
-func writeAssertionRequest(w *tabwriter.Writer, ar mtc.AssertionRequest) error {
-	fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
+func writeAssertionRequest(w *tabwriter.Writer, ar mtc.AssertionRequest,
+	showChecksum bool) error {
+	if showChecksum {
+		fmt.Fprintf(w, "checksum\t%x\n", ar.Checksum)
+	}
 	if ar.NotAfter.IsZero() {
 		fmt.Fprintf(w, "not_after\tunset\n")
 	} else {
@@ -967,7 +970,7 @@ func handleInspectAssertionRequest(cc *cli.Context) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	err = writeAssertionRequest(w, ar)
+	err = writeAssertionRequest(w, ar, true)
 	if err != nil {
 		return err
 	}
