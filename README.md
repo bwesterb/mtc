@@ -443,7 +443,7 @@ $ echo $?
 Status code 0 means verification succeeded.
 
 For transparency, you should not get the signed validity window directly
-from the CA, but rather from one or more  mirrors (see below).
+from the CA, but rather from one or more mirrors (see below).
 
 ### Run CA as server
 
