@@ -6,7 +6,7 @@ that each Merkle Tree Certificate is backed by a traditional X.509
 certificate (chain) issued by a trusted CA. We call this the *umbilical*
 certificate/chain.
 
-To accomedate this we allocate two new `EvidenceType`:
+To accommodate this we allocate two new `EvidenceType`:
 
 ```
 enum {
@@ -26,7 +26,7 @@ add the X.509 chain as evidence to the assertion-request.
 MTCA evidence policy
 --------------------
 By default, the MTCA will publish the evidence, but it will not check it
-or demand it's present.
+or require its presence.
 
 The MTCA can be configured to require umbilical evidence before publishing,
 by setting the *evidence policy* to `umbilical`:
@@ -36,7 +36,7 @@ mtc ca new -evidence-policy umbilical -umbilical-roots root_store.certs  62253.1
 ```
 
 The `-umbilical-roots` flag sets the PEM encoded root certificates that
-are trusted. 
+are accepted. 
 
 Before accepting an assertion request to the queue, the MTCA will
 require an umbilical chain as evidence, which verifies against one
@@ -58,7 +58,7 @@ Compressed umbilical
 The plain `umbilical` evidence format will lead to many duplicated
 intermediate certificates. To save space, there is an alternate format
 `compressed_umbilical`. Evidence with the `compressed_umbilical` type
-has as `info` field the concatenation of the SHA256 hashes
+has as `info` field set to the concatenation of the SHA256 hashes
 of each of the original ASN.1 DER encoded X.509 certificates.
 
 The certificates themselves are published in an `umbilical-certificates`
