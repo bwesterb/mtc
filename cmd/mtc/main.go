@@ -967,10 +967,6 @@ func handleCert(cc *cli.Context, inspect bool) error {
 		switch proof := c.Proof.(type) {
 		case *mtc.MerkleTreeProof:
 			fmt.Fprintf(w, "index\t%d\n", proof.Index())
-		}
-
-		switch proof := c.Proof.(type) {
-		case *mtc.MerkleTreeProof:
 			path := proof.Path()
 			batch := &mtc.Batch{
 				CA:     params,
