@@ -100,6 +100,34 @@ The second is optional "evidence" that's published alongside the
 assertions. In the future this could for instance be used for
 serialized DNSSEC proofs.
 
+We can also create an assertion request that roughly matches an existing X.509
+certificate at a TLS server using the `-X` flag:
+
+```
+$ mtc new-assertion-request -X example.com:443 | mtc inspect assertion-request
+checksum         015d4da06412b4e48f8d93bcbe7bbf43c4684579322cbfbc88d8b653bb2f7e51
+not_after        unset
+subject_type     TLS
+signature_scheme p256
+public_key_hash  8d566a5407ab85b413925911c4ce6b13013516006fa8568bf2ec58b9abe04af1
+dns              [example.com]
+dns_wildcard     [example.com]
+evidence-list (1 entries)
+umbilical
+ certificate 0
+  subject    CN=*.example.com,O=Internet Corporation for Assigned Names and Numbers,L=Los Angeles,ST=California,C=US
+  issuer     CN=DigiCert Global G3 TLS ECC SHA384 2020 CA1,O=DigiCert Inc,C=US
+  serial_no  ad893bafa68b0b7fb7a404f06ecaf9a
+  not_before 2025-01-15 00:00:00 +0000 UTC
+  not_after  2026-01-15 23:59:59 +0000 UTC
+ certificate 1
+  subject    CN=DigiCert Global G3 TLS ECC SHA384 2020 CA1,O=DigiCert Inc,C=US
+  issuer     CN=DigiCert Global Root G3,OU=www.digicert.com,O=DigiCert Inc,C=US
+  serial_no  b00e92d4d6d731fca3059c7cb1e1886
+  not_before 2021-04-14 00:00:00 +0000 UTC
+  not_after  2031-04-13 23:59:59 +0000 UTC
+```
+
 ### Batches, merkle trees and signed validity windows
 
 An MTCA doesn't give you a certificate for an assertion request immediately.
@@ -482,4 +510,67 @@ index                1
 recomputed tree head 043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
 authentication path
  8964f010faa9e499b21917f8792b541b7b1ac19f313a5d53094c698c2edc330b
+```
+
+### Mirroring a CA
+
+We can set up a new mirror with the `mtc mirror new` command:
+
+```
+$ mtc mirror new ca.example.com/path
+```
+
+This will download the `ca-params`
+from `https://ca.example.com/path/mtc/v04b/ca-params` and
+set up a directory structure similar to that of a CA:
+
+```
+$ find .
+.
+./www
+./www/mtc
+./www/mtc/v04b
+./www/mtc/v04b/ca-params
+./www/mtc/v04b/batches
+./tmp
+```
+
+To bring the mirror up to date with the CA, use the `update` command:
+
+```
+$ mtc mirror update
+2025/04/24 11:54:53 INFO Current state expectedStoredRemote=0 expectedActiveRemote=0 latestRemoteBatch=0 mirroredBatches=⌀
+2025/04/24 11:54:53 INFO Fetching batch=0
+2025/04/24 11:54:53 INFO Next batch at the earliest in 49s
+$ find .
+.
+./www
+./www/mtc
+./www/mtc/v04b
+./www/mtc/v04b/ca-params
+./www/mtc/v04b/batches
+./www/mtc/v04b/batches/0
+./www/mtc/v04b/batches/0/validity-window
+./www/mtc/v04b/batches/0/tree
+./www/mtc/v04b/batches/0/entries
+./www/mtc/v04b/batches/0/evidence
+./www/mtc/v04b/batches/latest
+./tmp
+```
+
+#### Local testing
+
+To make local testing convenient, when you use `localhost` as server prefix,
+the mirror will use `http` instead of `https`. This allows a quick testing
+set up as follows:
+
+```
+# Set up a CA in the ca folder
+$ mtc ca -p ca new --batch-duration 5m --lifetime 1h 62253.12.15 localhost:8080
+$ mtc ca -p ca queue -X example.com:443
+$ mtc ca -p ca issue
+$ mtc ca -p ca server -listen-addr localhost:8080 &
+# Set up a mirror of the CA in the mirror folder
+$ mtc mirror -p mirror new localhost:8080
+$ mtc mirror -p mirror update
 ```
