@@ -445,7 +445,7 @@ dns              [example.com]
 ip4              [198.51.100.60]
 
 proof_type           merkle_tree_sha256
-CA OID               62253.12.15
+CA TAI               62253.12.15
 Batch number         0
 index                1
 recomputed tree head 043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345
@@ -454,6 +454,22 @@ authentication path
 ```
 
 This is indeed the root of batch `0`, and so this certificate is valid.
+
+### Verify certificate
+
+To automate this, there is the `mtc verify` command that takes
+a certificate, the CA parameters, and a signed validity window.
+
+```
+$ mtc verify -ca-params www/mtc/v04b/ca-params -validity-window www/mtc/v04b/batches/1/validity-window my-cert
+$ echo $?
+0
+```
+
+Status code 0 means verification succeeded.
+
+For transparency, you should not get the signed validity window directly
+from the CA, but rather from one or more mirrors (see below).
 
 ### Run CA as server
 
@@ -502,7 +518,7 @@ dns              [example.com]
 ip4              [198.51.100.60]
 
 proof_type           merkle_tree_sha256
-CA OID               62253.12.15
+CA TAI               62253.12.15
 Batch number         0
 index                1
 recomputed tree head 043bc6b0e49a085f2370b2e0f0876d154c2e8d8fe049077dbad118a363580345

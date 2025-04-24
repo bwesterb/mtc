@@ -886,7 +886,20 @@ func writeEvidenceList(w *tabwriter.Writer, el mtc.EvidenceList) error {
 	return nil
 }
 
+func handleVerify(cc *cli.Context) error {
+	return handleCert(cc, false)
+}
+
 func handleInspectCert(cc *cli.Context) error {
+	return handleCert(cc, true)
+}
+
+// Handles `mtc verify' and `mtc inspect cert'
+func handleCert(cc *cli.Context, inspect bool) error {
+	if !inspect && !cc.IsSet("validity-window") {
+		return errors.New("-validity-window must be set")
+	}
+
 	buf, err := inspectGetBuf(cc)
 	if err != nil {
 		return err
@@ -905,56 +918,95 @@ func handleInspectCert(cc *cli.Context) error {
 		return err
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-	writeAssertion(w, c.Assertion)
-	fmt.Fprintf(w, "\n")
 	tai := c.Proof.TrustAnchorIdentifier()
-	fmt.Fprintf(w, "proof_type\t%v\n", tai.ProofType(&caStore))
-
-	fmt.Fprintf(w, "CA OID\t%s\n", tai.Issuer)
-	fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
-
-	switch proof := c.Proof.(type) {
-	case *mtc.MerkleTreeProof:
-		fmt.Fprintf(w, "index\t%d\n", proof.Index())
+	if !tai.Issuer.Equal(&params.Issuer) {
+		return fmt.Errorf(
+			"Issuer in certificate (%s) does not match provided CA (%s)",
+			tai.Issuer,
+			params.Issuer,
+		)
 	}
 
-	switch proof := c.Proof.(type) {
-	case *mtc.MerkleTreeProof:
-		path := proof.Path()
-		batch := &mtc.Batch{
-			CA:     params,
-			Number: tai.BatchNumber,
-		}
-
-		if !tai.Issuer.Equal(&params.Issuer) {
-			return fmt.Errorf(
-				"IssuerId doesn't match: %s ≠ %s",
-				params.Issuer,
-				tai.Issuer,
-			)
-		}
-		be := mtc.NewBatchEntry(c.Assertion, proof.NotAfter())
-		head, err := batch.ComputeTreeHeadFromAuthenticationPath(
-			proof.Index(),
-			path,
-			&be,
-		)
+	var (
+		vw           *mtc.SignedValidityWindow
+		verifyResult error
+	)
+	if cc.IsSet("validity-window") {
+		vwPath := cc.String("validity-window")
+		vwBuf, err := os.ReadFile(vwPath)
 		if err != nil {
-			return fmt.Errorf("computing tree head: %w", err)
+			return fmt.Errorf("Reading %s: %w", vwPath, err)
 		}
 
-		fmt.Fprintf(w, "recomputed tree head\t%x\n", head)
+		vw = new(mtc.SignedValidityWindow)
+		if err := vw.UnmarshalBinary(vwBuf, params); err != nil {
+			return fmt.Errorf("Parsing %s: %w", vwPath, err)
+		}
+
+		verifyResult = c.Verify(mtc.VerifyOptions{
+			ValidityWindow: &vw.ValidityWindow,
+			CA:             params,
+		})
+	}
+
+	if inspect {
+		w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+		writeAssertion(w, c.Assertion)
+		fmt.Fprintf(w, "\n")
+
+		fmt.Fprintf(w, "proof_type\t%v\n", params.ProofType)
+		fmt.Fprintf(w, "CA TAI\t%s\n", tai.Issuer)
+		fmt.Fprintf(w, "Batch number\t%d\n", tai.BatchNumber)
+
+		if vw != nil {
+			vrs := "✅"
+			if verifyResult != nil {
+				vrs = verifyResult.Error()
+			}
+
+			fmt.Fprintf(w, "Verification result\t%s\n", vrs)
+		}
+
+		switch proof := c.Proof.(type) {
+		case *mtc.MerkleTreeProof:
+			fmt.Fprintf(w, "index\t%d\n", proof.Index())
+			path := proof.Path()
+			batch := &mtc.Batch{
+				CA:     params,
+				Number: tai.BatchNumber,
+			}
+
+			if !tai.Issuer.Equal(&params.Issuer) {
+				return fmt.Errorf(
+					"IssuerId doesn't match: %s ≠ %s",
+					params.Issuer,
+					tai.Issuer,
+				)
+			}
+			be := mtc.NewBatchEntry(c.Assertion, proof.NotAfter())
+			head, err := batch.ComputeTreeHeadFromAuthenticationPath(
+				proof.Index(),
+				path,
+				&be,
+			)
+			if err != nil {
+				return fmt.Errorf("computing tree head: %w", err)
+			}
+
+			fmt.Fprintf(w, "recomputed tree head\t%x\n", head)
+
+			w.Flush()
+			fmt.Printf("authentication path\n")
+			for i := 0; i < len(path)/mtc.HashLen; i++ {
+				fmt.Printf(" %x\n", path[i*mtc.HashLen:(i+1)*mtc.HashLen])
+			}
+		}
 
 		w.Flush()
-		fmt.Printf("authentication path\n")
-		for i := 0; i < len(path)/mtc.HashLen; i++ {
-			fmt.Printf(" %x\n", path[i*mtc.HashLen:(i+1)*mtc.HashLen])
-		}
+		return nil
 	}
 
-	w.Flush()
-	return nil
+	return verifyResult
 }
 
 func handleInspectAssertionRequest(cc *cli.Context) error {
@@ -1322,6 +1374,13 @@ func main() {
 						Usage:     "parses a certificate",
 						Action:    handleInspectCert,
 						ArgsUsage: "[path]",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:    "validity-window",
+								Usage:   "path to signed validity window to verify against",
+								Aliases: []string{"w"},
+							},
+						},
 					},
 					{
 						Name:      "umbilical-certificates",
@@ -1357,6 +1416,24 @@ func main() {
 						Aliases: []string{"o"},
 					},
 				),
+			},
+			{
+				Name:      "verify",
+				Usage:     "verifies a merkle tree certificate",
+				Action:    handleVerify,
+				ArgsUsage: "[path]",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "ca-params",
+						Usage:   "path to CA parameters",
+						Aliases: []string{"p"},
+					},
+					&cli.StringFlag{
+						Name:    "validity-window",
+						Usage:   "path to trusted signed validity window",
+						Aliases: []string{"w"},
+					},
+				},
 			},
 		},
 		Before: func(cc *cli.Context) error {
