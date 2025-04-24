@@ -100,7 +100,7 @@ The second is optional "evidence" that's published alongside the
 assertions. In the future this could for instance be used for
 serialized DNSSEC proofs.
 
-We can also create an assertion request that roughly matches an existing X.509
+We can also create an assertion request derived from an existing X.509
 certificate at a TLS server using the `-X` flag:
 
 ```
