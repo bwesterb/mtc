@@ -429,7 +429,13 @@ func (c *BikeshedCertificate) UnmarshalBinary(data []byte, caStore CAStore) erro
 	if notAfter >= 1<<63 {
 		return errors.New("timestamp too large")
 	}
-	switch tai.ProofType(caStore) {
+
+	params := caStore.Lookup(tai.Issuer)
+	if params == nil {
+		return fmt.Errorf("unknown CA with TAI %s", tai)
+	}
+
+	switch params.ProofType {
 	case MerkleTreeProofType:
 		proof := &MerkleTreeProof{
 			notAfter: time.Unix(int64(notAfter), 0),
@@ -1965,15 +1971,19 @@ func NewMerkleTreeProof(batch *Batch, index uint64, notAfter time.Time,
 }
 
 type CAStore interface {
-	Lookup(oid RelativeOID) CAParams
+	Lookup(oid RelativeOID) *CAParams
 }
 
 type LocalCAStore struct {
 	store map[string]CAParams
 }
 
-func (s *LocalCAStore) Lookup(oid RelativeOID) CAParams {
-	return s.store[oid.String()]
+func (s *LocalCAStore) Lookup(oid RelativeOID) *CAParams {
+	ret, ok := s.store[oid.String()]
+	if !ok {
+		return nil
+	}
+	return &ret
 }
 
 func (s *LocalCAStore) Add(params CAParams) {
@@ -1993,10 +2003,6 @@ type TrustAnchorIdentifier struct {
 }
 
 type RelativeOID []byte
-
-func (tai *TrustAnchorIdentifier) ProofType(store CAStore) ProofType {
-	return store.Lookup(tai.Issuer).ProofType
-}
 
 func (oid RelativeOID) segments() []uint32 {
 	var res []uint32
@@ -2125,6 +2131,10 @@ func (tai TrustAnchorIdentifier) MarshalBinary() ([]byte, error) {
 		b.AddBytes(batch)
 	})
 	return b.Bytes()
+}
+
+func (tai TrustAnchorIdentifier) String() string {
+	return fmt.Sprintf("%s.%d", tai.Issuer, tai.BatchNumber)
 }
 
 func (tai *TrustAnchorIdentifier) unmarshal(s *cryptobyte.String) error {
