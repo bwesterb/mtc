@@ -1,7 +1,7 @@
+🚨 This implements an outdated version of Merkle Tree Certificates (pre "photosynthesis") 🚨
+
 Merkle Tree Certificates for TLS
 ================================
-
-🚨 Merkle Tree Certificates (**MTC**) is a moving target.
 
 Implementation of [Merkle Tree Certificates for TLS](
     https://davidben.github.io/merkle-tree-certs/draft-davidben-tls-merkle-tree-certs.html)
